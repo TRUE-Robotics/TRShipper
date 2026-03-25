@@ -1,9 +1,11 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue';
+import { reactive, ref, watch } from 'vue';
 import { boxOptions, createShipmentRequest } from '../services/fedex.js';
 import { searchAddressSuggestions } from '../services/addressAutocomplete.js';
 
 const form = reactive({
+  recipientName: '',
+  recipientCompany: '',
   email: '',
   phoneNumber: '',
   addressLine1: '',
@@ -24,13 +26,39 @@ const status = ref({
   tone: '',
   message: '',
 });
+const shipmentResult = ref({
+  trackingNumber: '',
+  label: '',
+  labelMimeType: 'application/pdf',
+  labelFileExtension: 'pdf',
+});
+const fieldErrors = reactive({
+  recipientName: '',
+  recipientCompany: '',
+  email: '',
+  phoneNumber: '',
+  addressLine1: '',
+  city: '',
+  stateOrProvinceCode: '',
+  postalCode: '',
+  countryCode: '',
+  boxType: '',
+  quantity: '',
+});
 
 let searchTimeoutId;
+let skipNextAddressSearch = false;
 
 watch(
   () => addressQuery.value,
   (value) => {
     clearTimeout(searchTimeoutId);
+
+    if (skipNextAddressSearch) {
+      skipNextAddressSearch = false;
+      suggestions.value = [];
+      return;
+    }
 
     if (!value || value.trim().length < 5) {
       suggestions.value = [];
@@ -54,18 +82,19 @@ watch(
   }
 );
 
-const canSubmit = computed(() => {
-  return (
-    form.email &&
-    form.phoneNumber &&
-    form.addressLine1 &&
-    form.city &&
-    form.stateOrProvinceCode &&
-    form.postalCode &&
-    form.boxType &&
-    Number(form.quantity) > 0
-  );
-});
+const requiredFieldLabels = {
+  recipientName: 'Recipient Name',
+  recipientCompany: 'Recipient Company',
+  email: 'Email',
+  phoneNumber: 'Recipient Phone',
+  addressLine1: 'Address Line 1',
+  city: 'City',
+  stateOrProvinceCode: 'State',
+  postalCode: 'ZIP Code',
+  countryCode: 'Country',
+  boxType: 'Box Type',
+  quantity: 'Quantity',
+};
 
 function applySuggestion(suggestion) {
   form.addressLine1 = suggestion.addressLine1;
@@ -73,15 +102,16 @@ function applySuggestion(suggestion) {
   form.stateOrProvinceCode = suggestion.stateOrProvinceCode;
   form.postalCode = suggestion.postalCode;
   form.countryCode = suggestion.countryCode || 'US';
+  skipNextAddressSearch = true;
   addressQuery.value = suggestion.label;
   suggestions.value = [];
 }
 
 async function handleSubmit() {
-  if (!canSubmit.value) {
+  if (!validateRequiredFields()) {
     status.value = {
       tone: 'error',
-      message: 'Please complete all required fields before submitting.',
+      message: 'Please complete all required fields marked with an asterisk.',
     };
     return;
   }
@@ -91,9 +121,17 @@ async function handleSubmit() {
     tone: '',
     message: '',
   };
+  shipmentResult.value = {
+    trackingNumber: '',
+    label: '',
+    labelMimeType: 'application/pdf',
+    labelFileExtension: 'pdf',
+  };
 
   try {
     const response = await createShipmentRequest({
+      recipientName: form.recipientName,
+      recipientCompany: form.recipientCompany,
       recipientEmail: form.email,
       recipientPhoneNumber: form.phoneNumber,
       shippingAddress: {
@@ -114,6 +152,12 @@ async function handleSubmit() {
       tone: 'success',
       message: response.message || 'Shipment request created successfully.',
     };
+    shipmentResult.value = {
+      trackingNumber: response.trackingNumber || '',
+      label: response.label || '',
+      labelMimeType: response.labelMimeType || 'application/pdf',
+      labelFileExtension: response.labelFileExtension || 'pdf',
+    };
   } catch (error) {
     status.value = {
       tone: 'error',
@@ -122,6 +166,72 @@ async function handleSubmit() {
   } finally {
     isSubmitting.value = false;
   }
+}
+
+function validateRequiredFields() {
+  let hasError = false;
+
+  for (const [field, label] of Object.entries(requiredFieldLabels)) {
+    const value = form[field];
+    const isEmpty =
+      typeof value === 'number'
+        ? Number.isNaN(value) || value <= 0
+        : !String(value ?? '').trim();
+
+    fieldErrors[field] = isEmpty ? `${label} is required.` : '';
+
+    if (fieldErrors[field]) {
+      hasError = true;
+    }
+  }
+
+  return !hasError;
+}
+
+function clearFieldError(field) {
+  fieldErrors[field] = '';
+}
+
+function inputClasses(field) {
+  return {
+    'input-invalid': Boolean(fieldErrors[field]),
+  };
+}
+
+function base64ToBlob(base64, mimeType) {
+  const binary = window.atob(base64);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return new Blob([bytes], { type: mimeType || 'application/octet-stream' });
+}
+
+function downloadLabel() {
+  if (!shipmentResult.value.label) {
+    return;
+  }
+
+  const blob = base64ToBlob(shipmentResult.value.label, shipmentResult.value.labelMimeType);
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+
+  link.href = url;
+  link.download = `fedex-label-${shipmentResult.value.trackingNumber || 'shipment'}.${shipmentResult.value.labelFileExtension || 'bin'}`;
+  link.click();
+
+  URL.revokeObjectURL(url);
+}
+
+function openLabel() {
+  if (!shipmentResult.value.label) {
+    return;
+  }
+
+  const blob = base64ToBlob(shipmentResult.value.label, shipmentResult.value.labelMimeType);
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener,noreferrer');
+
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url);
+  }, 60_000);
 }
 </script>
 
@@ -132,23 +242,56 @@ async function handleSubmit() {
         <p class="section-label">Shipment Request</p>
         <h2>Recipient + Package Details</h2>
       </div>
-      <span class="status-chip">FedEx Proxy Ready</span>
+      <span class="status-chip">Work In Progress</span>
     </div>
 
     <form class="shipping-form" @submit.prevent="handleSubmit">
       <label>
-        Recipient Email
-        <input v-model.trim="form.email" type="email" placeholder="name@example.com" required />
+        <span class="field-label">Recipient Name <span class="required-mark">*</span></span>
+        <input
+          v-model.trim="form.recipientName"
+          :class="inputClasses('recipientName')"
+          type="text"
+          placeholder="Jane Doe"
+          @input="clearFieldError('recipientName')"
+        />
+        <small v-if="fieldErrors.recipientName" class="field-error">{{ fieldErrors.recipientName }}</small>
       </label>
 
       <label>
-        Recipient Phone
+        <span class="field-label">Recipient Company <span class="required-mark">*</span></span>
+        <input
+          v-model.trim="form.recipientCompany"
+          :class="inputClasses('recipientCompany')"
+          type="text"
+          placeholder="Acme Inc."
+          @input="clearFieldError('recipientCompany')"
+        />
+        <small v-if="fieldErrors.recipientCompany" class="field-error">{{ fieldErrors.recipientCompany }}</small>
+      </label>
+
+      <label>
+        <span class="field-label">Email <span class="required-mark">*</span></span>
+        <input
+          v-model.trim="form.email"
+          :class="inputClasses('email')"
+          type="email"
+          placeholder="name@example.com"
+          @input="clearFieldError('email')"
+        />
+        <small v-if="fieldErrors.email" class="field-error">{{ fieldErrors.email }}</small>
+      </label>
+
+      <label>
+        <span class="field-label">Recipient Phone <span class="required-mark">*</span></span>
         <input
           v-model.trim="form.phoneNumber"
+          :class="inputClasses('phoneNumber')"
           type="tel"
           placeholder="9015550123"
-          required
+          @input="clearFieldError('phoneNumber')"
         />
+        <small v-if="fieldErrors.phoneNumber" class="field-error">{{ fieldErrors.phoneNumber }}</small>
       </label>
 
       <label class="full-width autocomplete-field">
@@ -173,68 +316,122 @@ async function handleSubmit() {
       </label>
 
       <label class="full-width">
-        Address Line 1
+        <span class="field-label">Address Line 1 <span class="required-mark">*</span></span>
         <input
           v-model.trim="form.addressLine1"
+          :class="inputClasses('addressLine1')"
           type="text"
           placeholder="123 Main St"
-          required
+          @input="clearFieldError('addressLine1')"
         />
+        <small v-if="fieldErrors.addressLine1" class="field-error">{{ fieldErrors.addressLine1 }}</small>
       </label>
 
       <label class="full-width">
-        Address Line 2
-        <input v-model.trim="form.addressLine2" type="text" placeholder="Suite, unit, etc." />
-      </label>
-
-      <label>
-        City
-        <input v-model.trim="form.city" type="text" placeholder="Memphis" required />
-      </label>
-
-      <label>
-        State
+        <span class="field-label">Address Line 2</span>
         <input
-          v-model.trim="form.stateOrProvinceCode"
+          v-model.trim="form.addressLine2"
           type="text"
-          maxlength="2"
-          placeholder="TN"
-          required
+          placeholder="Suite, unit, etc."
         />
       </label>
 
       <label>
-        ZIP Code
-        <input v-model.trim="form.postalCode" type="text" placeholder="38116" required />
+        <span class="field-label">City <span class="required-mark">*</span></span>
+        <input
+          v-model.trim="form.city"
+          :class="inputClasses('city')"
+          type="text"
+          placeholder="Memphis"
+          @input="clearFieldError('city')"
+        />
+        <small v-if="fieldErrors.city" class="field-error">{{ fieldErrors.city }}</small>
       </label>
 
       <label>
-        Country
-        <input v-model.trim="form.countryCode" type="text" maxlength="2" placeholder="US" />
+        <span class="field-label">State <span class="required-mark">*</span></span>
+        <input
+          v-model.trim="form.stateOrProvinceCode"
+          :class="inputClasses('stateOrProvinceCode')"
+          type="text"
+          maxlength="2"
+          placeholder="TN"
+          @input="clearFieldError('stateOrProvinceCode')"
+        />
+        <small v-if="fieldErrors.stateOrProvinceCode" class="field-error">{{ fieldErrors.stateOrProvinceCode }}</small>
       </label>
 
       <label>
-        Box Type
-        <select v-model="form.boxType">
+        <span class="field-label">ZIP Code <span class="required-mark">*</span></span>
+        <input
+          v-model.trim="form.postalCode"
+          :class="inputClasses('postalCode')"
+          type="text"
+          placeholder="38116"
+          @input="clearFieldError('postalCode')"
+        />
+        <small v-if="fieldErrors.postalCode" class="field-error">{{ fieldErrors.postalCode }}</small>
+      </label>
+
+      <label>
+        <span class="field-label">Country <span class="required-mark">*</span></span>
+        <input
+          v-model.trim="form.countryCode"
+          :class="inputClasses('countryCode')"
+          type="text"
+          maxlength="2"
+          placeholder="US"
+          @input="clearFieldError('countryCode')"
+        />
+        <small v-if="fieldErrors.countryCode" class="field-error">{{ fieldErrors.countryCode }}</small>
+      </label>
+
+      <label>
+        <span class="field-label">Box Type <span class="required-mark">*</span></span>
+        <select v-model="form.boxType" :class="inputClasses('boxType')" @change="clearFieldError('boxType')">
           <option v-for="option in boxOptions" :key="option.value" :value="option.value">
             {{ option.label }}
           </option>
         </select>
+        <small v-if="fieldErrors.boxType" class="field-error">{{ fieldErrors.boxType }}</small>
       </label>
 
       <label>
-        Quantity
-        <input v-model="form.quantity" type="number" min="1" step="1" required />
+        <span class="field-label">Quantity <span class="required-mark">*</span></span>
+        <input
+          v-model="form.quantity"
+          :class="inputClasses('quantity')"
+          type="number"
+          min="1"
+          step="1"
+          @input="clearFieldError('quantity')"
+        />
+        <small v-if="fieldErrors.quantity" class="field-error">{{ fieldErrors.quantity }}</small>
       </label>
 
       <div class="full-width form-actions">
-        <button :disabled="isSubmitting || !canSubmit" type="submit">
+        <button :disabled="isSubmitting" type="submit">
           {{ isSubmitting ? 'Submitting…' : 'Create Shipment' }}
         </button>
 
         <p v-if="status.message" :class="['form-status', status.tone]">
           {{ status.message }}
         </p>
+
+        <div v-if="shipmentResult.trackingNumber" class="shipment-result">
+          <p class="tracking-number">
+            Tracking Number: <strong>{{ shipmentResult.trackingNumber }}</strong>
+          </p>
+
+          <div v-if="shipmentResult.label" class="label-actions">
+            <button type="button" class="secondary-button" @click="downloadLabel">
+              Download Label
+            </button>
+            <button type="button" class="secondary-button" @click="openLabel">
+              Open Label
+            </button>
+          </div>
+        </div>
       </div>
     </form>
   </section>

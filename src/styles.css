@@ -186,6 +186,21 @@ button {
   transition: border-color 160ms ease, box-shadow 160ms ease;
 }
 
+.shipping-form select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 48px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #4f2a78 50%),
+    linear-gradient(135deg, #4f2a78 50%, transparent 50%);
+  background-position:
+    calc(100% - 22px) calc(50% - 3px),
+    calc(100% - 14px) calc(50% - 3px);
+  background-size: 8px 8px, 8px 8px;
+  background-repeat: no-repeat;
+}
+
 .shipping-form input:focus,
 .shipping-form select:focus {
   outline: none;
@@ -193,8 +208,30 @@ button {
   box-shadow: 0 0 0 4px rgba(255, 122, 25, 0.14);
 }
 
+.shipping-form .input-invalid {
+  border-color: #be2f2f;
+  box-shadow: 0 0 0 4px rgba(190, 47, 47, 0.12);
+}
+
 .full-width {
   grid-column: 1 / -1;
+}
+
+.required-mark {
+  color: #be2f2f;
+  font-weight: 800;
+}
+
+.field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.field-error {
+  color: #be2f2f;
+  font-size: 0.8rem;
+  font-weight: 600;
 }
 
 .autocomplete-field {
@@ -268,6 +305,43 @@ button {
 
 .form-status.error {
   color: #be2f2f;
+}
+
+.shipment-result {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: #f7f1ff;
+  border: 1px solid #eadcfb;
+}
+
+.tracking-number {
+  margin: 0;
+  color: #452165;
+  font-size: 0.95rem;
+}
+
+.label-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.secondary-button {
+  border: 1px solid #cfaef3;
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: #ffffff;
+  color: #4f2a78;
+  font-weight: 700;
+  box-shadow: none;
+  align-self: start;
+}
+
+.secondary-button:hover {
+  background: #f6ecff;
 }
 
 @media (max-width: 640px) {

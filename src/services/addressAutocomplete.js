@@ -1,12 +1,19 @@
 function normalizeSuggestion(item) {
   const address = item.address || {};
+  const addressLine1 = [address.house_number, address.road].filter(Boolean).join(' ').trim();
+  const city = address.city || address.town || address.village || address.hamlet || '';
+  const stateName = address.state || '';
+  const postalCode = address.postcode || '';
+  const countryName = address.country || 'United States';
 
   return {
-    label: item.display_name,
-    addressLine1: [address.house_number, address.road].filter(Boolean).join(' ').trim(),
-    city: address.city || address.town || address.village || address.hamlet || '',
+    label: [addressLine1, city, stateName, postalCode, countryName].filter(Boolean).join(', '),
+    addressLine1,
+    city,
+    stateName,
     stateOrProvinceCode: address.state_code || abbreviateState(address.state),
-    postalCode: address.postcode || '',
+    postalCode,
+    countryName,
     countryCode: address.country_code ? address.country_code.toUpperCase() : 'US',
   };
 }
@@ -95,4 +102,3 @@ function abbreviateState(stateName) {
 
   return states[stateName] || '';
 }
-

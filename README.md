@@ -2,7 +2,9 @@
 
 Static Vue 3 + Vite starter for a GitHub Pages deployment that collects:
 
+- recipient name
 - recipient email
+- recipient phone
 - shipping address
 - box type
 - quantity

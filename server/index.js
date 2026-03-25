@@ -7,6 +7,39 @@ loadLocalEnvFile();
 const port = Number(process.env.PORT || 8787);
 const host = process.env.HOST || '127.0.0.1';
 const allowedOrigin = process.env.ALLOWED_ORIGIN || 'http://localhost:5173';
+const allowedPickupTypes = new Set([
+  'CONTACT_FEDEX_TO_SCHEDULE',
+  'DROPOFF_AT_FEDEX_LOCATION',
+  'USE_SCHEDULED_PICKUP',
+]);
+const allowedWeightUnits = new Set(['KG', 'LB']);
+const allowedLabelImageTypes = new Set(['ZPLII', 'EPL2', 'PDF', 'PNG']);
+const allowedLabelStockTypes = new Set([
+  'PAPER_4X6',
+  'STOCK_4X675',
+  'PAPER_4X675',
+  'PAPER_4X8',
+  'PAPER_4X9',
+  'PAPER_7X475',
+  'PAPER_85X11_BOTTOM_HALF_LABEL',
+  'PAPER_85X11_TOP_HALF_LABEL',
+  'PAPER_LETTER',
+  'STOCK_4X675_LEADING_DOC_TAB',
+  'STOCK_4X8',
+  'STOCK_4X9_LEADING_DOC_TAB',
+  'STOCK_4X6',
+  'STOCK_4X675_TRAILING_DOC_TAB',
+  'STOCK_4X9_TRAILING_DOC_TAB',
+  'STOCK_4X9',
+  'STOCK_4X85_TRAILING_DOC_TAB',
+  'STOCK_4X105_TRAILING_DOC_TAB',
+]);
+const allowedLabelFormatTypes = new Set(['COMMON2D', 'LABEL_DATA_ONLY']);
+const allowedLabelPrintingOrientations = new Set([
+  'BOTTOM_EDGE_OF_TEXT_FIRST',
+  'TOP_EDGE_OF_TEXT_FIRST',
+]);
+const allowedLabelRotations = new Set(['LEFT', 'RIGHT', 'UPSIDE_DOWN', 'NONE']);
 
 let cachedToken;
 
@@ -100,6 +133,8 @@ async function readJsonBody(request) {
 
 function validateShipmentPayload(payload) {
   const required = [
+    payload?.recipientName,
+    payload?.recipientCompany,
     payload?.recipientEmail,
     payload?.recipientPhoneNumber,
     payload?.shippingAddress?.addressLine1,
@@ -178,9 +213,33 @@ function getGrantType() {
 function buildFedexShipmentPayload(payload) {
   const packageCount = Number(payload.packaging.quantity);
   const packageWeight = Number(process.env.FEDEX_PACKAGE_WEIGHT_VALUE || 1);
+  const totalWeight = Number((packageCount * packageWeight).toFixed(1));
   const packagingSelection = payload.packaging.boxType;
   const packagingType = resolvePackagingType(packagingSelection);
   const serviceType = resolveServiceType(packagingSelection);
+  const pickupType = readEnumEnv(
+    'FEDEX_PICKUP_TYPE',
+    'USE_SCHEDULED_PICKUP',
+    allowedPickupTypes
+  );
+  const weightUnits = readEnumEnv('FEDEX_WEIGHT_UNITS', 'LB', allowedWeightUnits);
+  const labelImageType = readEnumEnv('FEDEX_LABEL_IMAGE_TYPE', 'PDF', allowedLabelImageTypes);
+  const labelStockType = readEnumEnv(
+    'FEDEX_LABEL_STOCK_TYPE',
+    'PAPER_85X11_TOP_HALF_LABEL',
+    allowedLabelStockTypes
+  );
+  const labelFormatType = readEnumEnv(
+    'FEDEX_LABEL_FORMAT_TYPE',
+    'COMMON2D',
+    allowedLabelFormatTypes
+  );
+  const labelPrintingOrientation = readEnumEnv(
+    'FEDEX_LABEL_PRINTING_ORIENTATION',
+    'TOP_EDGE_OF_TEXT_FIRST',
+    allowedLabelPrintingOrientations
+  );
+  const labelRotation = readEnumEnv('FEDEX_LABEL_ROTATION', 'NONE', allowedLabelRotations);
   const streetLines = [
     payload.shippingAddress.addressLine1,
     payload.shippingAddress.addressLine2,
@@ -190,15 +249,16 @@ function buildFedexShipmentPayload(payload) {
     labelResponseOptions: 'LABEL',
     requestedShipment: {
       shipDatestamp: new Date().toISOString().slice(0, 10),
-      pickupType: process.env.FEDEX_PICKUP_TYPE || 'USE_SCHEDULED_PICKUP',
+      pickupType,
       serviceType,
       packagingType,
+      totalWeight,
       totalPackageCount: packageCount,
       shipper: {
         contact: {
           personName: process.env.FEDEX_SHIPPER_NAME || 'True Robotics',
+          emailAddress: requiredEnv('FEDEX_SHIPPER_EMAIL'),
           phoneNumber: process.env.FEDEX_SHIPPER_PHONE || '9015550100',
-          companyName: process.env.FEDEX_SHIPPER_COMPANY || 'True Robotics',
         },
         address: {
           streetLines: [
@@ -214,11 +274,9 @@ function buildFedexShipmentPayload(payload) {
       recipients: [
         {
           contact: {
-            personName: process.env.FEDEX_RECIPIENT_NAME || 'Shipping Recipient',
-            phoneNumber:
-              payload.recipientPhoneNumber ||
-              process.env.FEDEX_RECIPIENT_PHONE ||
-              '9015550199',
+            personName: payload.recipientName,
+            companyName: payload.recipientCompany,
+            phoneNumber: payload.recipientPhoneNumber,
             emailAddress: payload.recipientEmail,
           },
           address: {
@@ -234,10 +292,15 @@ function buildFedexShipmentPayload(payload) {
         paymentType: 'SENDER',
       },
       labelSpecification: {
-        imageType: process.env.FEDEX_LABEL_IMAGE_TYPE || 'PDF',
-        labelStockType:
-          process.env.FEDEX_LABEL_STOCK_TYPE || 'PAPER_85X11_TOP_HALF_LABEL',
-        labelFormatType: process.env.FEDEX_LABEL_FORMAT_TYPE || 'COMMON2D',
+        imageType: labelImageType,
+        labelStockType,
+        labelFormatType,
+        ...(labelImageType === 'ZPLII' || labelImageType === 'EPL2'
+          ? {
+              labelPrintingOrientation,
+              labelRotation,
+            }
+          : {}),
       },
       requestedPackageLineItems: Array.from({ length: packageCount }, (_, index) => ({
         sequenceNumber: index + 1,
@@ -253,7 +316,7 @@ function buildFedexShipmentPayload(payload) {
             }
           : {}),
         weight: {
-          units: process.env.FEDEX_WEIGHT_UNITS || 'LB',
+          units: weightUnits,
           value: packageWeight,
         },
       })),
@@ -269,12 +332,17 @@ function normalizeShipmentResponse(data) {
   const completedPackage =
     output?.transactionShipments?.[0]?.pieceResponses?.[0] ||
     output?.transactionShipments?.[0]?.completedPackageDetails?.[0];
+  const labelDocument = completedPackage?.packageDocuments?.[0] || null;
+  const labelDocType = labelDocument?.docType || null;
 
   return {
     ok: true,
     message: 'Shipment created successfully.',
     trackingNumber: completedPackage?.trackingNumber || null,
-    label: completedPackage?.packageDocuments?.[0]?.encodedLabel || null,
+    label: labelDocument?.encodedLabel || null,
+    labelDocType,
+    labelMimeType: resolveLabelMimeType(labelDocType),
+    labelFileExtension: resolveLabelFileExtension(labelDocType),
     raw: data,
   };
 }
@@ -284,8 +352,33 @@ function buildMockResponse(payload) {
     ok: true,
     message: `Mock shipment created for ${payload.recipientEmail}.`,
     trackingNumber: 'MOCK123456789',
+    labelDocType: 'PDF',
+    labelMimeType: 'application/pdf',
+    labelFileExtension: 'pdf',
     raw: payload,
   };
+}
+
+function resolveLabelMimeType(docType) {
+  switch (docType) {
+    case 'PNG':
+      return 'image/png';
+    case 'PDF':
+      return 'application/pdf';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+function resolveLabelFileExtension(docType) {
+  switch (docType) {
+    case 'PNG':
+      return 'png';
+    case 'PDF':
+      return 'pdf';
+    default:
+      return 'bin';
+  }
 }
 
 function extractFedexError(data) {
@@ -301,6 +394,16 @@ function requiredEnv(name) {
 
   if (!value) {
     throw new Error(`Missing required environment variable: ${name}`);
+  }
+
+  return value;
+}
+
+function readEnumEnv(name, fallback, allowedValues) {
+  const value = (process.env[name] || fallback || '').trim();
+
+  if (!allowedValues.has(value)) {
+    throw new Error(`Invalid ${name}: ${value}`);
   }
 
   return value;
