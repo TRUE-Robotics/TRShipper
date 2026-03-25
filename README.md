@@ -16,11 +16,12 @@ The app includes:
 - address autocomplete wiring
 - a FedEx service layer with mock local submission support
 - a local backend proxy for secure FedEx calls
-- `.env` handling for local development
+- a shared config file for non-secret app defaults
+- `.env` handling for local secrets
 
 ## Important note about FedEx credentials
 
-GitHub Pages is a static host, so you should **not** place FedEx API secrets directly in this frontend. The included service layer is designed to call a separate backend or serverless proxy through `VITE_API_BASE_URL`.
+GitHub Pages is a static host, so you should **not** place FedEx API secrets directly in this frontend. The included service layer is designed to call a separate backend or serverless proxy through the API base URL defined in `frontendConfig`.
 
 Recommended architecture:
 
@@ -54,20 +55,22 @@ npm run server:dev
 npm run build
 ```
 
-## Environment variables
+## Configuration
 
-Local `.env` is ignored by git.
+Non-secret settings live in [`app.config.js`](/Users/diwakarsandhu/Documents/GitHub/TRShipper/app.config.js).
 
-- `VITE_APP_TITLE`: app title shown in the UI
-- `VITE_GITHUB_PAGES_BASE`: Vite base path for GitHub Pages
-- `VITE_API_BASE_URL`: backend URL that will handle secure FedEx calls
-- `VITE_ADDRESS_AUTOCOMPLETE_URL`: address search endpoint
-- `VITE_ENABLE_MOCK_SUBMISSION`: set to `true` for frontend-only testing
-- `VITE_LOGO_URL`: logo path, defaults to `/logo.png`
+- `frontendConfig`: frontend title, base path, API URL, logo path, and address autocomplete settings
+- `serverConfig`: backend defaults like host/port, shipper info, pickup type, label settings, and debug logging
 
-## Backend environment
+## Secrets
 
-Create `.env.server` from `.env.server.example` and fill in your FedEx credentials plus shipper defaults.
+Local [`.env`](/Users/diwakarsandhu/Documents/GitHub/TRShipper/.env) is ignored by git and should only contain FedEx secrets:
+
+- `FEDEX_CLIENT_ID`
+- `FEDEX_CLIENT_SECRET`
+- `FEDEX_CHILD_KEY`
+- `FEDEX_CHILD_SECRET`
+- `FEDEX_ACCOUNT_NUMBER`
 
 The backend exposes:
 
@@ -76,4 +79,4 @@ The backend exposes:
 
 ## Suggested next step
 
-For the real FedEx flow, you will still need to confirm the exact shipment inputs you want to support. FedEx's Ship API requires more than just recipient email and address for many shipment types, so this starter uses backend defaults for the sender and package configuration while keeping the frontend simple.
+For the real FedEx flow, you will still need to confirm the exact shipment inputs you want to support. FedEx's Ship API requires more than just recipient address data for many shipment types, so this starter keeps those non-secret shipment defaults in `app.config.js` while isolating secrets in `.env`.

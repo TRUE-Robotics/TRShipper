@@ -1,11 +1,13 @@
+import { frontendConfig } from '../../app.config.js';
+
 export const boxOptions = [
   { value: '22x16x14', label: '22x16x14 Box' },
   { value: 'FEDEX_LARGE_PAK', label: 'FedEx Large Pak' },
 ];
 
 export async function createShipmentRequest(payload) {
-  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
-  const mockEnabled = import.meta.env.VITE_ENABLE_MOCK_SUBMISSION === 'true';
+  const apiBaseUrl = frontendConfig.apiBaseUrl;
+  const mockEnabled = frontendConfig.enableMockSubmission;
 
   if (mockEnabled) {
     await new Promise((resolve) => window.setTimeout(resolve, 700));
@@ -18,7 +20,7 @@ export async function createShipmentRequest(payload) {
   }
 
   if (!apiBaseUrl) {
-    throw new Error('Missing VITE_API_BASE_URL. Point it at your FedEx proxy/backend.');
+    throw new Error('Missing frontendConfig.apiBaseUrl. Point it at your FedEx proxy/backend.');
   }
 
   const response = await fetch(`${apiBaseUrl}/shipments`, {

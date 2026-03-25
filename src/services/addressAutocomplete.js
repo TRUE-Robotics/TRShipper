@@ -1,3 +1,5 @@
+import { frontendConfig } from '../../app.config.js';
+
 function normalizeSuggestion(item) {
   const address = item.address || {};
   const addressLine1 = [address.house_number, address.road].filter(Boolean).join(' ').trim();
@@ -19,7 +21,7 @@ function normalizeSuggestion(item) {
 }
 
 export async function searchAddressSuggestions(query) {
-  const endpoint = import.meta.env.VITE_ADDRESS_AUTOCOMPLETE_URL;
+  const endpoint = frontendConfig.addressAutocompleteUrl;
 
   if (!endpoint) {
     return [];

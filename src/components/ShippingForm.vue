@@ -29,6 +29,9 @@ const status = ref({
 const shipmentResult = ref({
   trackingNumber: '',
   label: '',
+  combinedLabelAvailable: false,
+  labelCount: 0,
+  labels: [],
   labelMimeType: 'application/pdf',
   labelFileExtension: 'pdf',
 });
@@ -124,6 +127,9 @@ async function handleSubmit() {
   shipmentResult.value = {
     trackingNumber: '',
     label: '',
+    combinedLabelAvailable: false,
+    labelCount: 0,
+    labels: [],
     labelMimeType: 'application/pdf',
     labelFileExtension: 'pdf',
   };
@@ -155,6 +161,9 @@ async function handleSubmit() {
     shipmentResult.value = {
       trackingNumber: response.trackingNumber || '',
       label: response.label || '',
+      combinedLabelAvailable: Boolean(response.combinedLabelAvailable),
+      labelCount: response.labelCount || 0,
+      labels: response.labels || [],
       labelMimeType: response.labelMimeType || 'application/pdf',
       labelFileExtension: response.labelFileExtension || 'pdf',
     };
@@ -232,6 +241,47 @@ function openLabel() {
   window.setTimeout(() => {
     URL.revokeObjectURL(url);
   }, 60_000);
+}
+
+function triggerLabelDownload(label, index = 0) {
+  const blob = base64ToBlob(label.label, label.labelMimeType);
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  const trackingNumber =
+    label.trackingNumber || shipmentResult.value.trackingNumber || `shipment-${index + 1}`;
+
+  link.href = url;
+  link.download = `fedex-label-${trackingNumber}.${label.labelFileExtension || 'bin'}`;
+  link.click();
+
+  URL.revokeObjectURL(url);
+}
+
+function openLabelFile(label) {
+  const blob = base64ToBlob(label.label, label.labelMimeType);
+  const url = URL.createObjectURL(blob);
+
+  window.open(url, '_blank', 'noopener,noreferrer');
+
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url);
+  }, 60_000);
+}
+
+function downloadAllLabels() {
+  shipmentResult.value.labels.forEach((label, index) => {
+    triggerLabelDownload(label, index);
+  });
+}
+
+function openAllLabels() {
+  shipmentResult.value.labels.forEach((label) => {
+    openLabelFile(label);
+  });
+}
+
+function multipleSeparateLabels() {
+  return shipmentResult.value.labels.length > 1 && !shipmentResult.value.combinedLabelAvailable;
 }
 </script>
 
@@ -423,12 +473,25 @@ function openLabel() {
             Tracking Number: <strong>{{ shipmentResult.trackingNumber }}</strong>
           </p>
 
-          <div v-if="shipmentResult.label" class="label-actions">
+          <p v-if="multipleSeparateLabels()" class="label-note">
+            {{ shipmentResult.labels.length }} separate label files were returned for this shipment, so the buttons below will open or download every label instead of only the first one.
+          </p>
+
+          <div v-if="shipmentResult.label && !multipleSeparateLabels()" class="label-actions">
             <button type="button" class="secondary-button" @click="downloadLabel">
               Download Label
             </button>
             <button type="button" class="secondary-button" @click="openLabel">
               Open Label
+            </button>
+          </div>
+
+          <div v-else-if="multipleSeparateLabels()" class="label-actions">
+            <button type="button" class="secondary-button" @click="downloadAllLabels">
+              Download All Labels
+            </button>
+            <button type="button" class="secondary-button" @click="openAllLabels">
+              Open All Labels
             </button>
           </div>
         </div>
