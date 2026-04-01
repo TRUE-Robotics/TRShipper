@@ -39,6 +39,29 @@ export async function createShipmentRequest(payload) {
   return response.json();
 }
 
+export async function createLabelPreview(zpl) {
+  const apiBaseUrl = frontendConfig.apiBaseUrl;
+
+  if (!apiBaseUrl) {
+    throw new Error('Missing frontendConfig.apiBaseUrl. Point it at your FedEx proxy/backend.');
+  }
+
+  const response = await fetch(`${apiBaseUrl}/labels/preview`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ zpl }),
+  });
+
+  if (!response.ok) {
+    const message = await readErrorMessage(response);
+    throw new Error(message);
+  }
+
+  return response.blob();
+}
+
 async function readErrorMessage(response) {
   try {
     const body = await response.json();

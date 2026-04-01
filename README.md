@@ -13,7 +13,7 @@ The app includes:
 
 - a Vite + Vue 3 scaffold
 - a shipping form component
-- address autocomplete wiring
+- FedEx address validation before shipment creation
 - a FedEx service layer with mock local submission support
 - a local backend proxy for secure FedEx calls
 - a shared config file for non-secret app defaults
@@ -59,7 +59,7 @@ npm run build
 
 Non-secret settings live in [`app.config.js`](/Users/diwakarsandhu/Documents/GitHub/TRShipper/app.config.js).
 
-- `frontendConfig`: frontend title, base path, API URL, logo path, and address autocomplete settings
+- `frontendConfig`: frontend title, base path, API URL, mock mode, and logo path
 - `serverConfig`: backend defaults like host/port, shipper info, pickup type, label settings, and debug logging
 
 ## Secrets

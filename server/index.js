@@ -1,8 +1,9 @@
 import { createServer } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { PDFDocument } from 'pdf-lib';
 import { serverConfig } from '../app.config.js';
+
+const localEnvPath = serverConfig.env_path;
 
 loadLocalEnvFile();
 
@@ -63,6 +64,24 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === 'POST' && request.url === '/labels/preview') {
+    try {
+      const payload = await readJsonBody(request);
+      const previewPdf = await renderZplPreviewPdf(payload);
+
+      response.writeHead(200, {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': 'inline; filename="label-preview.pdf"',
+      });
+      response.end(previewPdf);
+    } catch (error) {
+      sendJson(response, error.statusCode || 500, {
+        message: error.message || 'Label preview failed.',
+      });
+    }
+    return;
+  }
+
   if (request.method === 'POST' && request.url === '/shipments') {
     try {
       const payload = await readJsonBody(request);
@@ -74,7 +93,11 @@ const server = createServer(async (request, response) => {
       }
 
       const token = await getAccessToken();
-      const fedexPayload = buildFedexShipmentPayload(payload);
+      const validatedShippingAddress = await validateShippingAddress(token, payload.shippingAddress);
+      const fedexPayload = buildFedexShipmentPayload({
+        ...payload,
+        shippingAddress: validatedShippingAddress,
+      });
       const fedexResponse = await fetch(`${getFedexBaseUrl()}/ship/v1/shipments`, {
         method: 'POST',
         headers: {
@@ -204,12 +227,82 @@ async function getAccessToken() {
   return cachedToken.value;
 }
 
-function getGrantType() {
-  if (process.env.FEDEX_CHILD_KEY && process.env.FEDEX_CHILD_SECRET) {
-    return 'csp_credentials';
+async function validateShippingAddress(token, address) {
+  const requestPayload = {
+    addressesToValidate: [
+      {
+        address: {
+          streetLines: [address.addressLine1, address.addressLine2].filter(Boolean),
+          city: address.city,
+          stateOrProvinceCode: address.stateOrProvinceCode,
+          postalCode: address.postalCode,
+          countryCode: address.countryCode,
+        },
+      },
+    ],
+  };
+
+  const response = await fetch(`${getFedexBaseUrl()}/address/v1/addresses/resolve`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      'X-locale': 'en_US',
+    },
+    body: JSON.stringify(requestPayload),
+  });
+
+  const data = await response.json();
+  maybeLogAddressValidationDiagnostics({
+    requestAddress: address,
+    requestPayload,
+    responseStatus: response.status,
+    responseOk: response.ok,
+    responseBody: data,
+  });
+
+  if (!response.ok) {
+    throw new Error(extractFedexError(data) || 'FedEx address validation failed.');
   }
 
-  return 'client_credentials';
+  if (isVirtualAddressValidationResponse(data)) {
+    return address;
+  }
+
+  const resolvedAddress = extractFedexValidatedAddress(data, address);
+
+  if (!resolvedAddress) {
+    throw new Error('FedEx could not validate the shipping address.');
+  }
+
+  return resolvedAddress;
+}
+
+async function renderZplPreviewPdf(payload) {
+  const zpl = payload?.zpl;
+
+  if (!zpl || !String(zpl).trim()) {
+    const error = new Error('Missing ZPL payload for preview.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const response = await fetch('https://api.labelary.com/v1/printers/8dpmm/labels/4x6/', {
+    method: 'POST',
+    headers: {
+      Accept: 'application/pdf',
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'X-Rotation': String(serverConfig.zplPreviewRotation ?? 180),
+    },
+    body: zpl,
+  });
+
+  if (!response.ok) {
+    const previewError = await response.text();
+    throw new Error(previewError || 'Unable to render ZPL preview.');
+  }
+
+  return Buffer.from(await response.arrayBuffer());
 }
 
 function buildFedexShipmentPayload(payload) {
@@ -332,7 +425,8 @@ async function normalizeShipmentResponse(data, fedexPayload = null) {
   const completedPackages = collectCompletedPackages(transactionShipments);
   const labelDocuments = collectLabelDocuments(transactionShipments, completedPackages);
   const labelDiagnostics = await inspectLabelDocuments(labelDocuments);
-  const normalizedLabel = await buildCombinedPdf(labelDocuments);
+  const normalizedLabel = buildCombinedLabelBuffer(labelDocuments);
+  const normalizedLabelDocType = normalizedLabel?.docType || null;
 
   maybeLogLabelDiagnostics({
     requestLabelSpecification: fedexPayload?.requestedShipment?.labelSpecification || null,
@@ -346,9 +440,9 @@ async function normalizeShipmentResponse(data, fedexPayload = null) {
     message: 'Shipment created successfully.',
     trackingNumber: completedPackages[0]?.trackingNumber || null,
     label: normalizedLabel?.encodedLabel || null,
-    labelDocType: 'PDF',
-    labelMimeType: 'application/pdf',
-    labelFileExtension: 'pdf',
+    labelDocType: normalizedLabelDocType,
+    labelMimeType: resolveLabelMimeType(normalizedLabelDocType),
+    labelFileExtension: resolveLabelFileExtension(normalizedLabelDocType),
     combinedLabelAvailable: Boolean(normalizedLabel),
     labelCount: normalizedLabel?.pageCount || labelDocuments.length,
     labelDiagnostics,
@@ -357,9 +451,9 @@ async function normalizeShipmentResponse(data, fedexPayload = null) {
           {
             trackingNumber: completedPackages[0]?.trackingNumber || null,
             label: normalizedLabel.encodedLabel,
-            labelDocType: 'PDF',
-            labelMimeType: 'application/pdf',
-            labelFileExtension: 'pdf',
+            labelDocType: normalizedLabelDocType,
+            labelMimeType: resolveLabelMimeType(normalizedLabelDocType),
+            labelFileExtension: resolveLabelFileExtension(normalizedLabelDocType),
           },
         ]
       : [],
@@ -372,15 +466,26 @@ function buildMockResponse(payload) {
     ok: true,
     message: `Mock shipment created for ${payload.recipientEmail}.`,
     trackingNumber: 'MOCK123456789',
-    labelDocType: 'PDF',
-    labelMimeType: 'application/pdf',
-    labelFileExtension: 'pdf',
+    labelDocType: 'ZPLII',
+    labelMimeType: 'text/plain; charset=utf-8',
+    labelFileExtension: 'zpl',
     raw: payload,
   };
 }
 
+function getGrantType() {
+  if (process.env.FEDEX_CHILD_KEY && process.env.FEDEX_CHILD_SECRET) {
+    return 'csp_credentials';
+  }
+
+  return 'client_credentials';
+}
+
 function resolveLabelMimeType(docType) {
   switch (docType) {
+    case 'ZPLII':
+    case 'EPL2':
+      return 'text/plain; charset=utf-8';
     case 'PNG':
       return 'image/png';
     case 'PDF':
@@ -392,6 +497,10 @@ function resolveLabelMimeType(docType) {
 
 function resolveLabelFileExtension(docType) {
   switch (docType) {
+    case 'ZPLII':
+      return 'zpl';
+    case 'EPL2':
+      return 'epl';
     case 'PNG':
       return 'png';
     case 'PDF':
@@ -406,6 +515,60 @@ function extractFedexError(data) {
     data?.errors?.map((item) => item.message).filter(Boolean).join(' ') ||
     data?.message ||
     'FedEx request failed.'
+  );
+}
+
+function extractFedexValidatedAddress(data, originalAddress = null) {
+  const resolvedAddress =
+    data?.output?.resolvedAddresses?.[0] ||
+    data?.output?.resolvedAddresses?.[0]?.address ||
+    data?.resolvedAddresses?.[0] ||
+    null;
+
+  const address =
+    resolvedAddress?.address ||
+    resolvedAddress?.resolvedAddress ||
+    resolvedAddress;
+
+  const streetLines =
+    address?.streetLines ||
+    address?.streetLinesToken ||
+    address?.streetLine ||
+    address?.deliveryPointAddress ||
+    [];
+
+  const normalizedStreetLines = Array.isArray(streetLines)
+    ? streetLines.filter(Boolean)
+    : [streetLines].filter(Boolean);
+
+  const postalCode =
+    address?.postalCode ||
+    [address?.postalCode, address?.parsedPostalCode?.base, address?.parsedPostalCode?.addOn]
+      .filter(Boolean)
+      .join('-');
+
+  if (!normalizedStreetLines.length || !address?.city || !address?.stateOrProvinceCode) {
+    return null;
+  }
+
+  return {
+    addressLine1: normalizedStreetLines[0],
+    addressLine2:
+      normalizedStreetLines.slice(1).join(', ') || originalAddress?.addressLine2 || '',
+    city: address.city,
+    stateOrProvinceCode: address.stateOrProvinceCode,
+    postalCode: postalCode || '',
+    countryCode: address.countryCode || 'US',
+  };
+}
+
+function isVirtualAddressValidationResponse(data) {
+  const alerts = data?.output?.alerts || [];
+
+  return alerts.some(
+    (alert) =>
+      alert?.code === 'VIRTUAL.RESPONSE' ||
+      String(alert?.message || '').includes('Virtual Response')
   );
 }
 
@@ -488,89 +651,55 @@ function collectLabelDocuments(transactionShipments, completedPackages) {
   return uniqueDocuments;
 }
 
-async function buildCombinedPdf(labelDocuments) {
+function buildCombinedLabelBuffer(labelDocuments) {
   if (!labelDocuments.length) {
     return null;
   }
 
-  if (labelDocuments.length === 1 && labelDocuments[0]?.docType === 'PDF') {
-    const singlePdf = await PDFDocument.load(Buffer.from(labelDocuments[0].encodedLabel, 'base64'));
+  const uniqueDocTypes = [...new Set(labelDocuments.map((document) => document?.docType).filter(Boolean))];
+
+  if (uniqueDocTypes.length !== 1) {
+    return labelDocuments[0]
+      ? {
+          encodedLabel: labelDocuments[0].encodedLabel,
+          pageCount: 1,
+          docType: labelDocuments[0].docType || null,
+        }
+      : null;
+  }
+
+  const docType = uniqueDocTypes[0];
+
+  if (docType === 'ZPLII' || docType === 'EPL2') {
+    const combinedText = labelDocuments
+      .map((document) => Buffer.from(document.encodedLabel, 'base64').toString('utf8').trim())
+      .filter(Boolean)
+      .join('\n');
 
     return {
-      encodedLabel: labelDocuments[0].encodedLabel,
-      pageCount: singlePdf.getPageCount(),
+      encodedLabel: Buffer.from(combinedText, 'utf8').toString('base64'),
+      pageCount: labelDocuments.length,
+      docType,
     };
   }
 
-  const combinedPdf = await PDFDocument.create();
-
-  for (const document of labelDocuments) {
-    if (!document?.encodedLabel) {
-      continue;
-    }
-
-    if (document.docType === 'PDF') {
-      await appendPdfPages(combinedPdf, document.encodedLabel);
-      continue;
-    }
-
-    if (document.docType === 'PNG') {
-      await appendPngPage(combinedPdf, document.encodedLabel);
-    }
+  if (labelDocuments.length === 1) {
+    return {
+      encodedLabel: labelDocuments[0].encodedLabel,
+      pageCount: 1,
+      docType,
+    };
   }
-
-  if (!combinedPdf.getPageCount()) {
-    return null;
-  }
-
-  const pdfBytes = await combinedPdf.save();
 
   return {
-    encodedLabel: Buffer.from(pdfBytes).toString('base64'),
-    pageCount: combinedPdf.getPageCount(),
+    encodedLabel: labelDocuments[0].encodedLabel,
+    pageCount: labelDocuments.length,
+    docType,
   };
-}
-
-async function appendPdfPages(targetPdf, encodedLabel) {
-  const sourcePdf = await PDFDocument.load(Buffer.from(encodedLabel, 'base64'));
-  const pageIndices = sourcePdf.getPageIndices();
-  const copiedPages = await targetPdf.copyPages(sourcePdf, pageIndices);
-
-  for (const copiedPage of copiedPages) {
-    targetPdf.addPage(copiedPage);
-  }
-}
-
-async function appendPngPage(targetPdf, encodedLabel) {
-  const pngImage = await targetPdf.embedPng(Buffer.from(encodedLabel, 'base64'));
-  const { width, height } = fitWithinThermalPage(pngImage.width, pngImage.height);
-  const targetPage = targetPdf.addPage([4 * 72, 6 * 72]);
-
-  targetPage.drawImage(pngImage, {
-    x: ((4 * 72) - width) / 2,
-    y: ((6 * 72) - height) / 2,
-    width,
-    height,
-  });
 }
 
 function resolveFedexLabelImageType(requestedLabelImageType) {
-  if (requestedLabelImageType === 'PDF') {
-    return 'PNG';
-  }
-
   return requestedLabelImageType;
-}
-
-function fitWithinThermalPage(sourceWidth, sourceHeight) {
-  const pageWidth = 4 * 72;
-  const pageHeight = 6 * 72;
-  const scale = Math.min(pageWidth / sourceWidth, pageHeight / sourceHeight);
-
-  return {
-    width: sourceWidth * scale,
-    height: sourceHeight * scale,
-  };
 }
 
 async function inspectLabelDocuments(labelDocuments) {
@@ -588,26 +717,10 @@ async function inspectLabelDocuments(labelDocuments) {
       continue;
     }
 
-    if (document.docType === 'PDF') {
-      try {
-        const pdf = await PDFDocument.load(Buffer.from(document.encodedLabel, 'base64'));
-
-        entry.pageCount = pdf.getPageCount();
-        entry.pages = pdf.getPages().map((page, pageIndex) => {
-          const { width, height } = page.getSize();
-          return {
-            pageIndex,
-            width,
-            height,
-            widthInches: Number((width / 72).toFixed(3)),
-            heightInches: Number((height / 72).toFixed(3)),
-          };
-        });
-      } catch (error) {
-        entry.inspectError = error.message;
-      }
+    if (document.docType === 'ZPLII' || document.docType === 'EPL2') {
+      entry.preview = Buffer.from(document.encodedLabel, 'base64').toString('utf8').slice(0, 200);
     } else if (document.docType === 'PNG') {
-      entry.note = 'PNG label returned; page size derived at render time.';
+      entry.note = 'PNG label returned; image preview path is disabled for thermal printing.';
     }
 
     diagnostics.push(entry);
@@ -622,6 +735,14 @@ function maybeLogLabelDiagnostics(payload) {
   }
 
   console.log('[FEDEX_LABEL_DEBUG]', JSON.stringify(payload, null, 2));
+}
+
+function maybeLogAddressValidationDiagnostics(payload) {
+  if (!serverConfig.debugLabels) {
+    return;
+  }
+
+  console.log('[FEDEX_ADDRESS_VALIDATION_DEBUG]', JSON.stringify(payload, null, 2));
 }
 
 function resolvePackagingType(boxType) {
@@ -641,7 +762,7 @@ function resolveServiceType(boxType) {
 }
 
 function loadLocalEnvFile() {
-  const envPath = resolve(process.cwd(), '.env');
+  const envPath = localEnvPath;
 
   if (!existsSync(envPath)) {
     return;
