@@ -1,12 +1,15 @@
 import { createServer } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { serverConfig } from '../app.config.js';
+
+const localEnvPath = serverConfig.env_path;
 
 loadLocalEnvFile();
 
-const port = Number(process.env.PORT || 8787);
-const host = process.env.HOST || '127.0.0.1';
-const allowedOrigin = process.env.ALLOWED_ORIGIN || 'http://localhost:5173';
+const port = serverConfig.port;
+const host = serverConfig.host;
+const allowedOrigin = serverConfig.allowedOrigin;
 const allowedPickupTypes = new Set([
   'CONTACT_FEDEX_TO_SCHEDULE',
   'DROPOFF_AT_FEDEX_LOCATION',
@@ -61,6 +64,24 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === 'POST' && request.url === '/labels/preview') {
+    try {
+      const payload = await readJsonBody(request);
+      const previewPdf = await renderZplPreviewPdf(payload);
+
+      response.writeHead(200, {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': 'inline; filename="label-preview.pdf"',
+      });
+      response.end(previewPdf);
+    } catch (error) {
+      sendJson(response, error.statusCode || 500, {
+        message: error.message || 'Label preview failed.',
+      });
+    }
+    return;
+  }
+
   if (request.method === 'POST' && request.url === '/shipments') {
     try {
       const payload = await readJsonBody(request);
@@ -72,7 +93,11 @@ const server = createServer(async (request, response) => {
       }
 
       const token = await getAccessToken();
-      const fedexPayload = buildFedexShipmentPayload(payload);
+      const validatedShippingAddress = await validateShippingAddress(token, payload.shippingAddress);
+      const fedexPayload = buildFedexShipmentPayload({
+        ...payload,
+        shippingAddress: validatedShippingAddress,
+      });
       const fedexResponse = await fetch(`${getFedexBaseUrl()}/ship/v1/shipments`, {
         method: 'POST',
         headers: {
@@ -93,7 +118,7 @@ const server = createServer(async (request, response) => {
         return;
       }
 
-      sendJson(response, 200, normalizeShipmentResponse(data));
+      sendJson(response, 200, await normalizeShipmentResponse(data, fedexPayload));
     } catch (error) {
       sendJson(response, error.statusCode || 500, {
         message: error.message || 'Unexpected server error.',
@@ -154,11 +179,11 @@ function validateShipmentPayload(payload) {
 }
 
 function isMockEnabled() {
-  return String(process.env.FEDEX_ENABLE_MOCK || 'true') === 'true';
+  return serverConfig.fedexEnableMock;
 }
 
 function getFedexBaseUrl() {
-  return process.env.FEDEX_API_BASE_URL || 'https://apis-sandbox.fedex.com';
+  return serverConfig.fedexApiBaseUrl;
 }
 
 async function getAccessToken() {
@@ -202,44 +227,111 @@ async function getAccessToken() {
   return cachedToken.value;
 }
 
-function getGrantType() {
-  if (process.env.FEDEX_CHILD_KEY && process.env.FEDEX_CHILD_SECRET) {
-    return 'csp_credentials';
+async function validateShippingAddress(token, address) {
+  const requestPayload = {
+    addressesToValidate: [
+      {
+        address: {
+          streetLines: [address.addressLine1, address.addressLine2].filter(Boolean),
+          city: address.city,
+          stateOrProvinceCode: address.stateOrProvinceCode,
+          postalCode: address.postalCode,
+          countryCode: address.countryCode,
+        },
+      },
+    ],
+  };
+
+  const response = await fetch(`${getFedexBaseUrl()}/address/v1/addresses/resolve`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      'X-locale': 'en_US',
+    },
+    body: JSON.stringify(requestPayload),
+  });
+
+  const data = await response.json();
+  maybeLogAddressValidationDiagnostics({
+    requestAddress: address,
+    requestPayload,
+    responseStatus: response.status,
+    responseOk: response.ok,
+    responseBody: data,
+  });
+
+  if (!response.ok) {
+    throw new Error(extractFedexError(data) || 'FedEx address validation failed.');
   }
 
-  return 'client_credentials';
+  if (isVirtualAddressValidationResponse(data)) {
+    return address;
+  }
+
+  const resolvedAddress = extractFedexValidatedAddress(data, address);
+
+  if (!resolvedAddress) {
+    throw new Error('FedEx could not validate the shipping address.');
+  }
+
+  return resolvedAddress;
+}
+
+async function renderZplPreviewPdf(payload) {
+  const zpl = payload?.zpl;
+
+  if (!zpl || !String(zpl).trim()) {
+    const error = new Error('Missing ZPL payload for preview.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const response = await fetch('https://api.labelary.com/v1/printers/8dpmm/labels/4x6/', {
+    method: 'POST',
+    headers: {
+      Accept: 'application/pdf',
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'X-Rotation': String(serverConfig.zplPreviewRotation ?? 180),
+    },
+    body: zpl,
+  });
+
+  if (!response.ok) {
+    const previewError = await response.text();
+    throw new Error(previewError || 'Unable to render ZPL preview.');
+  }
+
+  return Buffer.from(await response.arrayBuffer());
 }
 
 function buildFedexShipmentPayload(payload) {
   const packageCount = Number(payload.packaging.quantity);
-  const packageWeight = Number(process.env.FEDEX_PACKAGE_WEIGHT_VALUE || 1);
+  const packageWeight = Number(serverConfig.packageWeightValue);
   const totalWeight = Number((packageCount * packageWeight).toFixed(1));
   const packagingSelection = payload.packaging.boxType;
   const packagingType = resolvePackagingType(packagingSelection);
   const serviceType = resolveServiceType(packagingSelection);
-  const pickupType = readEnumEnv(
-    'FEDEX_PICKUP_TYPE',
-    'USE_SCHEDULED_PICKUP',
-    allowedPickupTypes
+  const pickupType = readConfiguredEnum(serverConfig.pickupType, allowedPickupTypes, 'pickupType');
+  const weightUnits = readConfiguredEnum(serverConfig.weightUnits, allowedWeightUnits, 'weightUnits');
+  const requestedLabelImageType = readConfiguredEnum(
+    serverConfig.labelImageType,
+    allowedLabelImageTypes,
+    'labelImageType'
   );
-  const weightUnits = readEnumEnv('FEDEX_WEIGHT_UNITS', 'LB', allowedWeightUnits);
-  const labelImageType = readEnumEnv('FEDEX_LABEL_IMAGE_TYPE', 'PDF', allowedLabelImageTypes);
-  const labelStockType = readEnumEnv(
-    'FEDEX_LABEL_STOCK_TYPE',
-    'PAPER_85X11_TOP_HALF_LABEL',
-    allowedLabelStockTypes
+  const labelImageType = resolveFedexLabelImageType(requestedLabelImageType);
+  const labelStockType = resolveLabelStockType(labelImageType);
+  const labelFormatType = readConfiguredEnum(
+    serverConfig.labelFormatType,
+    allowedLabelFormatTypes,
+    'labelFormatType'
   );
-  const labelFormatType = readEnumEnv(
-    'FEDEX_LABEL_FORMAT_TYPE',
-    'COMMON2D',
-    allowedLabelFormatTypes
-  );
-  const labelPrintingOrientation = readEnumEnv(
-    'FEDEX_LABEL_PRINTING_ORIENTATION',
+  const labelPrintingOrientation = readConfiguredEnum(
     'TOP_EDGE_OF_TEXT_FIRST',
-    allowedLabelPrintingOrientations
+    allowedLabelPrintingOrientations,
+    'labelPrintingOrientation'
   );
-  const labelRotation = readEnumEnv('FEDEX_LABEL_ROTATION', 'NONE', allowedLabelRotations);
+  const labelRotation = readConfiguredEnum('NONE', allowedLabelRotations, 'labelRotation');
   const streetLines = [
     payload.shippingAddress.addressLine1,
     payload.shippingAddress.addressLine2,
@@ -256,19 +348,19 @@ function buildFedexShipmentPayload(payload) {
       totalPackageCount: packageCount,
       shipper: {
         contact: {
-          personName: process.env.FEDEX_SHIPPER_NAME || 'True Robotics',
-          emailAddress: requiredEnv('FEDEX_SHIPPER_EMAIL'),
-          phoneNumber: process.env.FEDEX_SHIPPER_PHONE || '9015550100',
+          personName: serverConfig.shipperName,
+          emailAddress: serverConfig.shipperEmail,
+          phoneNumber: serverConfig.shipperPhone,
         },
         address: {
           streetLines: [
-            requiredEnv('FEDEX_SHIPPER_ADDRESS_1'),
-            process.env.FEDEX_SHIPPER_ADDRESS_2,
+            serverConfig.shipperAddress1,
+            serverConfig.shipperAddress2,
           ].filter(Boolean),
-          city: requiredEnv('FEDEX_SHIPPER_CITY'),
-          stateOrProvinceCode: requiredEnv('FEDEX_SHIPPER_STATE'),
-          postalCode: requiredEnv('FEDEX_SHIPPER_POSTAL_CODE'),
-          countryCode: requiredEnv('FEDEX_SHIPPER_COUNTRY_CODE'),
+          city: serverConfig.shipperCity,
+          stateOrProvinceCode: serverConfig.shipperState,
+          postalCode: serverConfig.shipperPostalCode,
+          countryCode: serverConfig.shipperCountryCode,
         },
       },
       recipients: [
@@ -327,22 +419,44 @@ function buildFedexShipmentPayload(payload) {
   };
 }
 
-function normalizeShipmentResponse(data) {
+async function normalizeShipmentResponse(data, fedexPayload = null) {
   const output = data?.output || {};
-  const completedPackage =
-    output?.transactionShipments?.[0]?.pieceResponses?.[0] ||
-    output?.transactionShipments?.[0]?.completedPackageDetails?.[0];
-  const labelDocument = completedPackage?.packageDocuments?.[0] || null;
-  const labelDocType = labelDocument?.docType || null;
+  const transactionShipments = output?.transactionShipments || [];
+  const completedPackages = collectCompletedPackages(transactionShipments);
+  const labelDocuments = collectLabelDocuments(transactionShipments, completedPackages);
+  const labelDiagnostics = await inspectLabelDocuments(labelDocuments);
+  const normalizedLabel = buildCombinedLabelBuffer(labelDocuments);
+  const normalizedLabelDocType = normalizedLabel?.docType || null;
+
+  maybeLogLabelDiagnostics({
+    requestLabelSpecification: fedexPayload?.requestedShipment?.labelSpecification || null,
+    packageCount: completedPackages.length,
+    labelDocumentCount: labelDocuments.length,
+    labelDiagnostics,
+  });
 
   return {
     ok: true,
     message: 'Shipment created successfully.',
-    trackingNumber: completedPackage?.trackingNumber || null,
-    label: labelDocument?.encodedLabel || null,
-    labelDocType,
-    labelMimeType: resolveLabelMimeType(labelDocType),
-    labelFileExtension: resolveLabelFileExtension(labelDocType),
+    trackingNumber: completedPackages[0]?.trackingNumber || null,
+    label: normalizedLabel?.encodedLabel || null,
+    labelDocType: normalizedLabelDocType,
+    labelMimeType: resolveLabelMimeType(normalizedLabelDocType),
+    labelFileExtension: resolveLabelFileExtension(normalizedLabelDocType),
+    combinedLabelAvailable: Boolean(normalizedLabel),
+    labelCount: normalizedLabel?.pageCount || labelDocuments.length,
+    labelDiagnostics,
+    labels: normalizedLabel
+      ? [
+          {
+            trackingNumber: completedPackages[0]?.trackingNumber || null,
+            label: normalizedLabel.encodedLabel,
+            labelDocType: normalizedLabelDocType,
+            labelMimeType: resolveLabelMimeType(normalizedLabelDocType),
+            labelFileExtension: resolveLabelFileExtension(normalizedLabelDocType),
+          },
+        ]
+      : [],
     raw: data,
   };
 }
@@ -352,15 +466,26 @@ function buildMockResponse(payload) {
     ok: true,
     message: `Mock shipment created for ${payload.recipientEmail}.`,
     trackingNumber: 'MOCK123456789',
-    labelDocType: 'PDF',
-    labelMimeType: 'application/pdf',
-    labelFileExtension: 'pdf',
+    labelDocType: 'ZPLII',
+    labelMimeType: 'text/plain; charset=utf-8',
+    labelFileExtension: 'zpl',
     raw: payload,
   };
 }
 
+function getGrantType() {
+  if (process.env.FEDEX_CHILD_KEY && process.env.FEDEX_CHILD_SECRET) {
+    return 'csp_credentials';
+  }
+
+  return 'client_credentials';
+}
+
 function resolveLabelMimeType(docType) {
   switch (docType) {
+    case 'ZPLII':
+    case 'EPL2':
+      return 'text/plain; charset=utf-8';
     case 'PNG':
       return 'image/png';
     case 'PDF':
@@ -372,6 +497,10 @@ function resolveLabelMimeType(docType) {
 
 function resolveLabelFileExtension(docType) {
   switch (docType) {
+    case 'ZPLII':
+      return 'zpl';
+    case 'EPL2':
+      return 'epl';
     case 'PNG':
       return 'png';
     case 'PDF':
@@ -389,6 +518,60 @@ function extractFedexError(data) {
   );
 }
 
+function extractFedexValidatedAddress(data, originalAddress = null) {
+  const resolvedAddress =
+    data?.output?.resolvedAddresses?.[0] ||
+    data?.output?.resolvedAddresses?.[0]?.address ||
+    data?.resolvedAddresses?.[0] ||
+    null;
+
+  const address =
+    resolvedAddress?.address ||
+    resolvedAddress?.resolvedAddress ||
+    resolvedAddress;
+
+  const streetLines =
+    address?.streetLines ||
+    address?.streetLinesToken ||
+    address?.streetLine ||
+    address?.deliveryPointAddress ||
+    [];
+
+  const normalizedStreetLines = Array.isArray(streetLines)
+    ? streetLines.filter(Boolean)
+    : [streetLines].filter(Boolean);
+
+  const postalCode =
+    address?.postalCode ||
+    [address?.postalCode, address?.parsedPostalCode?.base, address?.parsedPostalCode?.addOn]
+      .filter(Boolean)
+      .join('-');
+
+  if (!normalizedStreetLines.length || !address?.city || !address?.stateOrProvinceCode) {
+    return null;
+  }
+
+  return {
+    addressLine1: normalizedStreetLines[0],
+    addressLine2:
+      normalizedStreetLines.slice(1).join(', ') || originalAddress?.addressLine2 || '',
+    city: address.city,
+    stateOrProvinceCode: address.stateOrProvinceCode,
+    postalCode: postalCode || '',
+    countryCode: address.countryCode || 'US',
+  };
+}
+
+function isVirtualAddressValidationResponse(data) {
+  const alerts = data?.output?.alerts || [];
+
+  return alerts.some(
+    (alert) =>
+      alert?.code === 'VIRTUAL.RESPONSE' ||
+      String(alert?.message || '').includes('Virtual Response')
+  );
+}
+
 function requiredEnv(name) {
   const value = process.env[name];
 
@@ -399,14 +582,167 @@ function requiredEnv(name) {
   return value;
 }
 
-function readEnumEnv(name, fallback, allowedValues) {
-  const value = (process.env[name] || fallback || '').trim();
+function readConfiguredEnum(value, allowedValues, label) {
+  const normalizedValue = String(value || '').trim();
 
-  if (!allowedValues.has(value)) {
-    throw new Error(`Invalid ${name}: ${value}`);
+  if (!allowedValues.has(normalizedValue)) {
+    throw new Error(`Invalid ${label}: ${normalizedValue}`);
   }
 
-  return value;
+  return normalizedValue;
+}
+
+function resolveLabelStockType(labelImageType) {
+  const configuredValue = String(serverConfig.labelStockType || '').trim();
+
+  if (configuredValue) {
+    return readConfiguredEnum(configuredValue, allowedLabelStockTypes, 'labelStockType');
+  }
+
+  if (labelImageType === 'PDF' || labelImageType === 'PNG') {
+    return 'PAPER_4X6';
+  }
+
+  return 'STOCK_4X6';
+}
+
+function collectCompletedPackages(transactionShipments) {
+  return transactionShipments.flatMap((shipment) => {
+    return shipment?.pieceResponses?.length
+      ? shipment.pieceResponses
+      : shipment?.completedPackageDetails || [];
+  });
+}
+
+function collectLabelDocuments(transactionShipments, completedPackages) {
+  const shipmentDocuments = transactionShipments.flatMap((shipment) =>
+    (shipment?.shipmentDocuments || [])
+      .filter((document) => document?.encodedLabel)
+      .map((document) => ({
+        ...document,
+        scope: 'shipment',
+      }))
+  );
+
+  const packageDocuments = completedPackages.flatMap((pkg) =>
+    (pkg?.packageDocuments || [])
+      .filter((document) => document?.encodedLabel)
+      .map((document) => ({
+        ...document,
+        trackingNumber: pkg?.trackingNumber || null,
+        scope: 'package',
+      }))
+  );
+
+  const uniqueDocuments = [];
+  const seen = new Set();
+
+  for (const document of [...shipmentDocuments, ...packageDocuments]) {
+    const key = `${document.docType || ''}:${document.encodedLabel}`;
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    uniqueDocuments.push(document);
+  }
+
+  return uniqueDocuments;
+}
+
+function buildCombinedLabelBuffer(labelDocuments) {
+  if (!labelDocuments.length) {
+    return null;
+  }
+
+  const uniqueDocTypes = [...new Set(labelDocuments.map((document) => document?.docType).filter(Boolean))];
+
+  if (uniqueDocTypes.length !== 1) {
+    return labelDocuments[0]
+      ? {
+          encodedLabel: labelDocuments[0].encodedLabel,
+          pageCount: 1,
+          docType: labelDocuments[0].docType || null,
+        }
+      : null;
+  }
+
+  const docType = uniqueDocTypes[0];
+
+  if (docType === 'ZPLII' || docType === 'EPL2') {
+    const combinedText = labelDocuments
+      .map((document) => Buffer.from(document.encodedLabel, 'base64').toString('utf8').trim())
+      .filter(Boolean)
+      .join('\n');
+
+    return {
+      encodedLabel: Buffer.from(combinedText, 'utf8').toString('base64'),
+      pageCount: labelDocuments.length,
+      docType,
+    };
+  }
+
+  if (labelDocuments.length === 1) {
+    return {
+      encodedLabel: labelDocuments[0].encodedLabel,
+      pageCount: 1,
+      docType,
+    };
+  }
+
+  return {
+    encodedLabel: labelDocuments[0].encodedLabel,
+    pageCount: labelDocuments.length,
+    docType,
+  };
+}
+
+function resolveFedexLabelImageType(requestedLabelImageType) {
+  return requestedLabelImageType;
+}
+
+async function inspectLabelDocuments(labelDocuments) {
+  const diagnostics = [];
+
+  for (const [index, document] of labelDocuments.entries()) {
+    const entry = {
+      index,
+      docType: document?.docType || null,
+      trackingNumber: document?.trackingNumber || null,
+    };
+
+    if (!document?.encodedLabel) {
+      diagnostics.push(entry);
+      continue;
+    }
+
+    if (document.docType === 'ZPLII' || document.docType === 'EPL2') {
+      entry.preview = Buffer.from(document.encodedLabel, 'base64').toString('utf8').slice(0, 200);
+    } else if (document.docType === 'PNG') {
+      entry.note = 'PNG label returned; image preview path is disabled for thermal printing.';
+    }
+
+    diagnostics.push(entry);
+  }
+
+  return diagnostics;
+}
+
+function maybeLogLabelDiagnostics(payload) {
+  if (!serverConfig.debugLabels) {
+    return;
+  }
+
+  console.log('[FEDEX_LABEL_DEBUG]', JSON.stringify(payload, null, 2));
+}
+
+function maybeLogAddressValidationDiagnostics(payload) {
+  if (!serverConfig.debugLabels) {
+    return;
+  }
+
+  console.log('[FEDEX_ADDRESS_VALIDATION_DEBUG]', JSON.stringify(payload, null, 2));
 }
 
 function resolvePackagingType(boxType) {
@@ -426,7 +762,7 @@ function resolveServiceType(boxType) {
 }
 
 function loadLocalEnvFile() {
-  const envPath = resolve(process.cwd(), '.env.server');
+  const envPath = localEnvPath;
 
   if (!existsSync(envPath)) {
     return;

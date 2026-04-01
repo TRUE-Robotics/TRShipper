@@ -1,9 +1,10 @@
 <script setup>
 import { ref } from 'vue';
 import ShippingForm from './components/ShippingForm.vue';
+import { frontendConfig } from '../app.config.js';
 
-const appTitle = import.meta.env.VITE_APP_TITLE || 'True Robotics FedEx Shipping';
-const configuredLogoUrl = import.meta.env.VITE_LOGO_URL;
+const appTitle = frontendConfig.appTitle;
+const configuredLogoUrl = frontendConfig.logoUrl;
 const logoUrl = resolveLogoUrl(configuredLogoUrl);
 const logoVisible = ref(true);
 

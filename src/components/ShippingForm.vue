@@ -1,7 +1,6 @@
 <script setup>
-import { reactive, ref, watch } from 'vue';
-import { boxOptions, createShipmentRequest } from '../services/fedex.js';
-import { searchAddressSuggestions } from '../services/addressAutocomplete.js';
+import { reactive, ref } from 'vue';
+import { boxOptions, createLabelPreview, createShipmentRequest } from '../services/fedex.js';
 
 const form = reactive({
   recipientName: '',
@@ -18,9 +17,6 @@ const form = reactive({
   quantity: 1,
 });
 
-const addressQuery = ref('');
-const suggestions = ref([]);
-const isSearching = ref(false);
 const isSubmitting = ref(false);
 const status = ref({
   tone: '',
@@ -29,8 +25,12 @@ const status = ref({
 const shipmentResult = ref({
   trackingNumber: '',
   label: '',
-  labelMimeType: 'application/pdf',
-  labelFileExtension: 'pdf',
+  combinedLabelAvailable: false,
+  labelCount: 0,
+  labels: [],
+  labelDocType: 'ZPLII',
+  labelMimeType: 'text/plain; charset=utf-8',
+  labelFileExtension: 'zpl',
 });
 const fieldErrors = reactive({
   recipientName: '',
@@ -46,42 +46,6 @@ const fieldErrors = reactive({
   quantity: '',
 });
 
-let searchTimeoutId;
-let skipNextAddressSearch = false;
-
-watch(
-  () => addressQuery.value,
-  (value) => {
-    clearTimeout(searchTimeoutId);
-
-    if (skipNextAddressSearch) {
-      skipNextAddressSearch = false;
-      suggestions.value = [];
-      return;
-    }
-
-    if (!value || value.trim().length < 5) {
-      suggestions.value = [];
-      return;
-    }
-
-    searchTimeoutId = window.setTimeout(async () => {
-      isSearching.value = true;
-
-      try {
-        suggestions.value = await searchAddressSuggestions(value);
-      } catch (error) {
-        status.value = {
-          tone: 'error',
-          message: error.message || 'Address lookup failed.',
-        };
-      } finally {
-        isSearching.value = false;
-      }
-    }, 350);
-  }
-);
-
 const requiredFieldLabels = {
   recipientName: 'Recipient Name',
   recipientCompany: 'Recipient Company',
@@ -95,17 +59,6 @@ const requiredFieldLabels = {
   boxType: 'Box Type',
   quantity: 'Quantity',
 };
-
-function applySuggestion(suggestion) {
-  form.addressLine1 = suggestion.addressLine1;
-  form.city = suggestion.city;
-  form.stateOrProvinceCode = suggestion.stateOrProvinceCode;
-  form.postalCode = suggestion.postalCode;
-  form.countryCode = suggestion.countryCode || 'US';
-  skipNextAddressSearch = true;
-  addressQuery.value = suggestion.label;
-  suggestions.value = [];
-}
 
 async function handleSubmit() {
   if (!validateRequiredFields()) {
@@ -124,8 +77,12 @@ async function handleSubmit() {
   shipmentResult.value = {
     trackingNumber: '',
     label: '',
-    labelMimeType: 'application/pdf',
-    labelFileExtension: 'pdf',
+    combinedLabelAvailable: false,
+    labelCount: 0,
+    labels: [],
+    labelDocType: 'ZPLII',
+    labelMimeType: 'text/plain; charset=utf-8',
+    labelFileExtension: 'zpl',
   };
 
   try {
@@ -155,8 +112,12 @@ async function handleSubmit() {
     shipmentResult.value = {
       trackingNumber: response.trackingNumber || '',
       label: response.label || '',
-      labelMimeType: response.labelMimeType || 'application/pdf',
-      labelFileExtension: response.labelFileExtension || 'pdf',
+      combinedLabelAvailable: Boolean(response.combinedLabelAvailable),
+      labelCount: response.labelCount || 0,
+      labels: response.labels || [],
+      labelDocType: response.labelDocType || 'ZPLII',
+      labelMimeType: response.labelMimeType || 'text/plain; charset=utf-8',
+      labelFileExtension: response.labelFileExtension || 'zpl',
     };
   } catch (error) {
     status.value = {
@@ -199,6 +160,11 @@ function inputClasses(field) {
 }
 
 function base64ToBlob(base64, mimeType) {
+  if ((mimeType || '').startsWith('text/plain')) {
+    const text = window.atob(base64);
+    return new Blob([text], { type: mimeType || 'text/plain; charset=utf-8' });
+  }
+
   const binary = window.atob(base64);
   const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
   return new Blob([bytes], { type: mimeType || 'application/octet-stream' });
@@ -220,13 +186,82 @@ function downloadLabel() {
   URL.revokeObjectURL(url);
 }
 
-function openLabel() {
+async function openLabel() {
   if (!shipmentResult.value.label) {
+    return;
+  }
+
+  if ((shipmentResult.value.labelMimeType || '').startsWith('text/plain')) {
+    await openRenderedZplPreview(window.atob(shipmentResult.value.label));
     return;
   }
 
   const blob = base64ToBlob(shipmentResult.value.label, shipmentResult.value.labelMimeType);
   const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener,noreferrer');
+
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url);
+  }, 60_000);
+}
+
+function triggerLabelDownload(label, index = 0) {
+  const blob = base64ToBlob(label.label, label.labelMimeType);
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  const trackingNumber =
+    label.trackingNumber || shipmentResult.value.trackingNumber || `shipment-${index + 1}`;
+
+  link.href = url;
+  link.download = `fedex-label-${trackingNumber}.${label.labelFileExtension || 'bin'}`;
+  link.click();
+
+  URL.revokeObjectURL(url);
+}
+
+async function openLabelFile(label) {
+  if ((label.labelMimeType || '').startsWith('text/plain')) {
+    await openRenderedZplPreview(window.atob(label.label));
+    return;
+  }
+
+  const blob = base64ToBlob(label.label, label.labelMimeType);
+  const url = URL.createObjectURL(blob);
+
+  window.open(url, '_blank', 'noopener,noreferrer');
+
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url);
+  }, 60_000);
+}
+
+function downloadAllLabels() {
+  shipmentResult.value.labels.forEach((label, index) => {
+    triggerLabelDownload(label, index);
+  });
+}
+
+function openAllLabels() {
+  shipmentResult.value.labels.forEach(async (label) => {
+    await openLabelFile(label);
+  });
+}
+
+function multipleSeparateLabels() {
+  return shipmentResult.value.labels.length > 1 && !shipmentResult.value.combinedLabelAvailable;
+}
+
+function escapeHtml(value) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+}
+
+async function openRenderedZplPreview(zpl) {
+  const blob = await createLabelPreview(zpl);
+  const url = URL.createObjectURL(blob);
+
   window.open(url, '_blank', 'noopener,noreferrer');
 
   window.setTimeout(() => {
@@ -292,27 +327,6 @@ function openLabel() {
           @input="clearFieldError('phoneNumber')"
         />
         <small v-if="fieldErrors.phoneNumber" class="field-error">{{ fieldErrors.phoneNumber }}</small>
-      </label>
-
-      <label class="full-width autocomplete-field">
-        Shipping Address Search
-        <input
-          v-model.trim="addressQuery"
-          type="text"
-          placeholder="Start typing an address"
-          autocomplete="off"
-        />
-        <small>Typing 5+ characters will fetch suggestions and fill the address fields.</small>
-
-        <ul v-if="suggestions.length" class="suggestions-list">
-          <li v-for="suggestion in suggestions" :key="suggestion.label">
-            <button type="button" @click="applySuggestion(suggestion)">
-              {{ suggestion.label }}
-            </button>
-          </li>
-        </ul>
-
-        <small v-else-if="isSearching">Searching addresses…</small>
       </label>
 
       <label class="full-width">
@@ -423,12 +437,25 @@ function openLabel() {
             Tracking Number: <strong>{{ shipmentResult.trackingNumber }}</strong>
           </p>
 
-          <div v-if="shipmentResult.label" class="label-actions">
+          <p v-if="multipleSeparateLabels()" class="label-note">
+            {{ shipmentResult.labels.length }} separate label files were returned for this shipment, so the buttons below will open or download every label instead of only the first one.
+          </p>
+
+          <div v-if="shipmentResult.label && !multipleSeparateLabels()" class="label-actions">
             <button type="button" class="secondary-button" @click="downloadLabel">
-              Download Label
+              Download Raw Label
             </button>
             <button type="button" class="secondary-button" @click="openLabel">
-              Open Label
+              Preview Label
+            </button>
+          </div>
+
+          <div v-else-if="multipleSeparateLabels()" class="label-actions">
+            <button type="button" class="secondary-button" @click="downloadAllLabels">
+              Download All Labels
+            </button>
+            <button type="button" class="secondary-button" @click="openAllLabels">
+              Preview All Labels
             </button>
           </div>
         </div>
