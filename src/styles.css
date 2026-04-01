@@ -28,7 +28,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -176,7 +177,8 @@ button {
 }
 
 .shipping-form input,
-.shipping-form select {
+.shipping-form select,
+.intake-textarea {
   width: 100%;
   border: 3px solid #2e2d31;
   border-radius: 10px;
@@ -202,7 +204,8 @@ button {
 }
 
 .shipping-form input:focus,
-.shipping-form select:focus {
+.shipping-form select:focus,
+.intake-textarea:focus {
   outline: none;
   border-color: #ff7a19;
   box-shadow: 0 0 0 4px rgba(255, 122, 25, 0.14);
@@ -232,6 +235,51 @@ button {
   color: #be2f2f;
   font-size: 0.8rem;
   font-weight: 600;
+}
+
+.intake-card {
+  padding-top: 34px;
+}
+
+.intake-stack {
+  display: grid;
+  gap: 20px;
+}
+
+.intake-intro {
+  margin: -4px 0 2px;
+  max-width: 44rem;
+  color: #70528f;
+  font-size: 0.98rem;
+}
+
+.intake-textarea {
+  min-height: 168px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.intake-help {
+  color: #8664af;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+.intake-button {
+  border: 0;
+  min-height: 56px;
+  border-radius: 16px;
+  padding: 14px 22px;
+  background: linear-gradient(180deg, #ff7f1f 0%, #ff6800 100%);
+  color: #fff;
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  box-shadow: 0 16px 28px rgba(255, 104, 0, 0.22);
+}
+
+.intake-button:hover {
+  filter: brightness(1.02);
 }
 
 .suggestions-list {
