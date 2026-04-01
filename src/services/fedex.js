@@ -2,6 +2,8 @@ import { frontendConfig } from '../../app.config.js';
 
 export const boxOptions = [
   { value: '22x16x14', label: '22x16x14 Box' },
+  { value: 'FEDEX_MEDIUM_BOX', label: 'FedEx Medium Box' },
+  { value: 'FEDEX_LARGE_BOX', label: 'FedEx Large Box' },
   { value: 'FEDEX_LARGE_PAK', label: 'FedEx Large Pak' },
 ];
 

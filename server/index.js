@@ -746,6 +746,14 @@ function maybeLogAddressValidationDiagnostics(payload) {
 }
 
 function resolvePackagingType(boxType) {
+  if (boxType === 'FEDEX_MEDIUM_BOX') {
+    return 'FEDEX_MEDIUM_BOX';
+  }
+
+  if (boxType === 'FEDEX_LARGE_BOX') {
+    return 'FEDEX_LARGE_BOX';
+  }
+
   if (boxType === 'FEDEX_LARGE_PAK') {
     return 'FEDEX_PAK';
   }
@@ -754,7 +762,11 @@ function resolvePackagingType(boxType) {
 }
 
 function resolveServiceType(boxType) {
-  if (boxType === 'FEDEX_LARGE_PAK') {
+  if (
+    boxType === 'FEDEX_MEDIUM_BOX' ||
+    boxType === 'FEDEX_LARGE_BOX' ||
+    boxType === 'FEDEX_LARGE_PAK'
+  ) {
     return 'FEDEX_EXPRESS_SAVER';
   }
 

@@ -1,6 +1,7 @@
 <script setup>
-import { reactive, ref } from 'vue';
+import { onMounted, reactive, ref } from 'vue';
 import { boxOptions, createLabelPreview, createShipmentRequest } from '../services/fedex.js';
+import { consumePastedShipmentDraft } from '../utils/pastedShipment.js';
 
 const form = reactive({
   recipientName: '',
@@ -59,6 +60,25 @@ const requiredFieldLabels = {
   boxType: 'Box Type',
   quantity: 'Quantity',
 };
+
+onMounted(() => {
+  const draft = consumePastedShipmentDraft();
+
+  if (!draft) {
+    return;
+  }
+
+  form.recipientName = draft.recipientName || '';
+  form.recipientCompany = draft.recipientCompany || '';
+  form.email = draft.email || '';
+  form.phoneNumber = draft.phoneNumber || '';
+  form.addressLine1 = draft.addressLine1 || '';
+  form.addressLine2 = draft.addressLine2 || '';
+  form.city = draft.city || '';
+  form.stateOrProvinceCode = draft.stateOrProvinceCode || '';
+  form.postalCode = draft.postalCode || '';
+  form.countryCode = draft.countryCode || 'US';
+});
 
 async function handleSubmit() {
   if (!validateRequiredFields()) {
