@@ -1,6 +1,6 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue';
-import { boxOptions, createLabelPreview, createShipmentRequest } from '../services/fedex.js';
+import { boxOptions, createShipmentRequest } from '../services/fedex.js';
 import { consumePastedShipmentDraft } from '../utils/pastedShipment.js';
 
 const form = reactive({
@@ -29,9 +29,9 @@ const shipmentResult = ref({
   combinedLabelAvailable: false,
   labelCount: 0,
   labels: [],
-  labelDocType: 'ZPLII',
-  labelMimeType: 'text/plain; charset=utf-8',
-  labelFileExtension: 'zpl',
+  labelDocType: 'PNG',
+  labelMimeType: 'image/png',
+  labelFileExtension: 'png',
 });
 const fieldErrors = reactive({
   recipientName: '',
@@ -100,9 +100,9 @@ async function handleSubmit() {
     combinedLabelAvailable: false,
     labelCount: 0,
     labels: [],
-    labelDocType: 'ZPLII',
-    labelMimeType: 'text/plain; charset=utf-8',
-    labelFileExtension: 'zpl',
+    labelDocType: 'PNG',
+    labelMimeType: 'image/png',
+    labelFileExtension: 'png',
   };
 
   try {
@@ -135,9 +135,9 @@ async function handleSubmit() {
       combinedLabelAvailable: Boolean(response.combinedLabelAvailable),
       labelCount: response.labelCount || 0,
       labels: response.labels || [],
-      labelDocType: response.labelDocType || 'ZPLII',
-      labelMimeType: response.labelMimeType || 'text/plain; charset=utf-8',
-      labelFileExtension: response.labelFileExtension || 'zpl',
+      labelDocType: response.labelDocType || 'PNG',
+      labelMimeType: response.labelMimeType || 'image/png',
+      labelFileExtension: response.labelFileExtension || 'png',
     };
   } catch (error) {
     status.value = {
@@ -180,11 +180,6 @@ function inputClasses(field) {
 }
 
 function base64ToBlob(base64, mimeType) {
-  if ((mimeType || '').startsWith('text/plain')) {
-    const text = window.atob(base64);
-    return new Blob([text], { type: mimeType || 'text/plain; charset=utf-8' });
-  }
-
   const binary = window.atob(base64);
   const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
   return new Blob([bytes], { type: mimeType || 'application/octet-stream' });
@@ -211,8 +206,14 @@ async function openLabel() {
     return;
   }
 
-  if ((shipmentResult.value.labelMimeType || '').startsWith('text/plain')) {
-    await openRenderedZplPreview(window.atob(shipmentResult.value.label));
+  if (shipmentResult.value.labelMimeType.startsWith('image/')) {
+    openImagePreviewPage([
+      {
+        label: shipmentResult.value.label,
+        labelMimeType: shipmentResult.value.labelMimeType,
+        trackingNumber: shipmentResult.value.trackingNumber,
+      },
+    ]);
     return;
   }
 
@@ -240,8 +241,8 @@ function triggerLabelDownload(label, index = 0) {
 }
 
 async function openLabelFile(label) {
-  if ((label.labelMimeType || '').startsWith('text/plain')) {
-    await openRenderedZplPreview(window.atob(label.label));
+  if (String(label.labelMimeType || '').startsWith('image/')) {
+    openImagePreviewPage([label]);
     return;
   }
 
@@ -262,6 +263,11 @@ function downloadAllLabels() {
 }
 
 function openAllLabels() {
+  if (shipmentResult.value.labels.every((label) => String(label.labelMimeType || '').startsWith('image/'))) {
+    openImagePreviewPage(shipmentResult.value.labels);
+    return;
+  }
+
   shipmentResult.value.labels.forEach(async (label) => {
     await openLabelFile(label);
   });
@@ -271,22 +277,83 @@ function multipleSeparateLabels() {
   return shipmentResult.value.labels.length > 1 && !shipmentResult.value.combinedLabelAvailable;
 }
 
-function escapeHtml(value) {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
-}
+function openImagePreviewPage(labels) {
+  const imageMarkup = labels
+    .map((label, index) => {
+      const trackingNumber =
+        label.trackingNumber || shipmentResult.value.trackingNumber || `Label ${index + 1}`;
+      const mimeType = label.labelMimeType || 'image/png';
 
-async function openRenderedZplPreview(zpl) {
-  const blob = await createLabelPreview(zpl);
+      return `
+        <section class="label-sheet">
+          <header>Label ${index + 1}${trackingNumber ? ` · ${escapeHtml(trackingNumber)}` : ''}</header>
+          <img src="data:${mimeType};base64,${label.label}" alt="FedEx label ${index + 1}" />
+        </section>
+      `;
+    })
+    .join('');
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Label Preview</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 24px;
+        font-family: Arial, sans-serif;
+        background: #f4f4f6;
+        color: #1f1f24;
+      }
+      .preview {
+        max-width: 960px;
+        margin: 0 auto;
+        display: grid;
+        gap: 24px;
+      }
+      .label-sheet {
+        background: white;
+        border-radius: 16px;
+        padding: 16px;
+        box-shadow: 0 12px 40px rgba(31, 31, 36, 0.12);
+      }
+      .label-sheet header {
+        margin-bottom: 12px;
+        font-size: 14px;
+        font-weight: 700;
+        color: #5a3a9e;
+      }
+      .label-sheet img {
+        display: block;
+        width: 100%;
+        height: auto;
+        image-rendering: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="preview">${imageMarkup}</main>
+  </body>
+</html>`;
+
+  const blob = new Blob([html], { type: 'text/html' });
   const url = URL.createObjectURL(blob);
-
   window.open(url, '_blank', 'noopener,noreferrer');
 
   window.setTimeout(() => {
     URL.revokeObjectURL(url);
   }, 60_000);
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 </script>
 
@@ -463,7 +530,7 @@ async function openRenderedZplPreview(zpl) {
 
           <div v-if="shipmentResult.label && !multipleSeparateLabels()" class="label-actions">
             <button type="button" class="secondary-button" @click="downloadLabel">
-              Download Raw Label
+              Download Label
             </button>
             <button type="button" class="secondary-button" @click="openLabel">
               Preview Label

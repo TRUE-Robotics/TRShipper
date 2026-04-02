@@ -25,9 +25,8 @@ export const serverConfig = Object.freeze({
   pickupType: 'DROPOFF_AT_FEDEX_LOCATION',
   weightUnits: 'LB',
   packageWeightValue: 10,
-  labelImageType: 'ZPLII',
-  labelStockType: 'STOCK_4X6',
+  labelImageType: 'PNG',
+  labelStockType: 'PAPER_4X6',
   labelFormatType: 'COMMON2D',
-  zplPreviewRotation: 180,
   debugLabels: true,
 });

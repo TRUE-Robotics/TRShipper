@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { PDFDocument } from 'pdf-lib';
 import { serverConfig } from '../app.config.js';
 
 const localEnvPath = serverConfig.env_path;
@@ -43,7 +44,6 @@ const allowedLabelPrintingOrientations = new Set([
   'TOP_EDGE_OF_TEXT_FIRST',
 ]);
 const allowedLabelRotations = new Set(['LEFT', 'RIGHT', 'UPSIDE_DOWN', 'NONE']);
-
 let cachedToken;
 
 const server = createServer(async (request, response) => {
@@ -61,24 +61,6 @@ const server = createServer(async (request, response) => {
       mockMode: isMockEnabled(),
       provider: 'fedex',
     });
-    return;
-  }
-
-  if (request.method === 'POST' && request.url === '/labels/preview') {
-    try {
-      const payload = await readJsonBody(request);
-      const previewPdf = await renderZplPreviewPdf(payload);
-
-      response.writeHead(200, {
-        'Content-Type': 'application/pdf',
-        'Content-Disposition': 'inline; filename="label-preview.pdf"',
-      });
-      response.end(previewPdf);
-    } catch (error) {
-      sendJson(response, error.statusCode || 500, {
-        message: error.message || 'Label preview failed.',
-      });
-    }
     return;
   }
 
@@ -278,33 +260,6 @@ async function validateShippingAddress(token, address) {
   return resolvedAddress;
 }
 
-async function renderZplPreviewPdf(payload) {
-  const zpl = payload?.zpl;
-
-  if (!zpl || !String(zpl).trim()) {
-    const error = new Error('Missing ZPL payload for preview.');
-    error.statusCode = 400;
-    throw error;
-  }
-
-  const response = await fetch('https://api.labelary.com/v1/printers/8dpmm/labels/4x6/', {
-    method: 'POST',
-    headers: {
-      Accept: 'application/pdf',
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'X-Rotation': String(serverConfig.zplPreviewRotation ?? 180),
-    },
-    body: zpl,
-  });
-
-  if (!response.ok) {
-    const previewError = await response.text();
-    throw new Error(previewError || 'Unable to render ZPL preview.');
-  }
-
-  return Buffer.from(await response.arrayBuffer());
-}
-
 function buildFedexShipmentPayload(payload) {
   const packageCount = Number(payload.packaging.quantity);
   const packageWeight = Number(serverConfig.packageWeightValue);
@@ -425,8 +380,16 @@ async function normalizeShipmentResponse(data, fedexPayload = null) {
   const completedPackages = collectCompletedPackages(transactionShipments);
   const labelDocuments = collectLabelDocuments(transactionShipments, completedPackages);
   const labelDiagnostics = await inspectLabelDocuments(labelDocuments);
-  const normalizedLabel = buildCombinedLabelBuffer(labelDocuments);
-  const normalizedLabelDocType = normalizedLabel?.docType || null;
+  const normalizedLabel = await buildCombinedLabelBuffer(labelDocuments);
+  const hasCombinedLabel = Boolean(normalizedLabel?.encodedLabel);
+  const normalizedLabelDocType = hasCombinedLabel ? normalizedLabel?.docType || null : null;
+  const normalizedLabels = labelDocuments.map((document, index) => ({
+    trackingNumber: document?.trackingNumber || completedPackages[index]?.trackingNumber || null,
+    label: document?.encodedLabel || null,
+    labelDocType: document?.docType || null,
+    labelMimeType: resolveLabelMimeType(document?.docType || null),
+    labelFileExtension: resolveLabelFileExtension(document?.docType || null),
+  }));
 
   maybeLogLabelDiagnostics({
     requestLabelSpecification: fedexPayload?.requestedShipment?.labelSpecification || null,
@@ -439,14 +402,14 @@ async function normalizeShipmentResponse(data, fedexPayload = null) {
     ok: true,
     message: 'Shipment created successfully.',
     trackingNumber: completedPackages[0]?.trackingNumber || null,
-    label: normalizedLabel?.encodedLabel || null,
+    label: hasCombinedLabel ? normalizedLabel.encodedLabel : null,
     labelDocType: normalizedLabelDocType,
     labelMimeType: resolveLabelMimeType(normalizedLabelDocType),
     labelFileExtension: resolveLabelFileExtension(normalizedLabelDocType),
-    combinedLabelAvailable: Boolean(normalizedLabel),
-    labelCount: normalizedLabel?.pageCount || labelDocuments.length,
+    combinedLabelAvailable: hasCombinedLabel,
+    labelCount: hasCombinedLabel ? normalizedLabel?.pageCount || labelDocuments.length : labelDocuments.length,
     labelDiagnostics,
-    labels: normalizedLabel
+    labels: hasCombinedLabel
       ? [
           {
             trackingNumber: completedPackages[0]?.trackingNumber || null,
@@ -456,7 +419,7 @@ async function normalizeShipmentResponse(data, fedexPayload = null) {
             labelFileExtension: resolveLabelFileExtension(normalizedLabelDocType),
           },
         ]
-      : [],
+      : normalizedLabels,
     raw: data,
   };
 }
@@ -466,9 +429,9 @@ function buildMockResponse(payload) {
     ok: true,
     message: `Mock shipment created for ${payload.recipientEmail}.`,
     trackingNumber: 'MOCK123456789',
-    labelDocType: 'ZPLII',
-    labelMimeType: 'text/plain; charset=utf-8',
-    labelFileExtension: 'zpl',
+    labelDocType: 'PNG',
+    labelMimeType: 'image/png',
+    labelFileExtension: 'png',
     raw: payload,
   };
 }
@@ -483,13 +446,13 @@ function getGrantType() {
 
 function resolveLabelMimeType(docType) {
   switch (docType) {
-    case 'ZPLII':
-    case 'EPL2':
-      return 'text/plain; charset=utf-8';
     case 'PNG':
       return 'image/png';
     case 'PDF':
       return 'application/pdf';
+    case 'ZPLII':
+    case 'EPL2':
+      return 'text/plain; charset=utf-8';
     default:
       return 'application/octet-stream';
   }
@@ -497,14 +460,14 @@ function resolveLabelMimeType(docType) {
 
 function resolveLabelFileExtension(docType) {
   switch (docType) {
-    case 'ZPLII':
-      return 'zpl';
-    case 'EPL2':
-      return 'epl';
     case 'PNG':
       return 'png';
     case 'PDF':
       return 'pdf';
+    case 'ZPLII':
+      return 'zpl';
+    case 'EPL2':
+      return 'epl';
     default:
       return 'bin';
   }
@@ -651,7 +614,7 @@ function collectLabelDocuments(transactionShipments, completedPackages) {
   return uniqueDocuments;
 }
 
-function buildCombinedLabelBuffer(labelDocuments) {
+async function buildCombinedLabelBuffer(labelDocuments) {
   if (!labelDocuments.length) {
     return null;
   }
@@ -670,16 +633,39 @@ function buildCombinedLabelBuffer(labelDocuments) {
 
   const docType = uniqueDocTypes[0];
 
-  if (docType === 'ZPLII' || docType === 'EPL2') {
-    const combinedText = labelDocuments
-      .map((document) => Buffer.from(document.encodedLabel, 'base64').toString('utf8').trim())
-      .filter(Boolean)
-      .join('\n');
-
+  if (docType === 'PDF') {
     return {
-      encodedLabel: Buffer.from(combinedText, 'utf8').toString('base64'),
+      encodedLabel: labelDocuments[0].encodedLabel,
       pageCount: labelDocuments.length,
       docType,
+    };
+  }
+
+  if (docType === 'PNG') {
+    const combinedPdf = await PDFDocument.create();
+
+    for (const document of labelDocuments) {
+      const pngBytes = Buffer.from(document.encodedLabel, 'base64');
+      const embeddedPng = await combinedPdf.embedPng(pngBytes);
+      const page = combinedPdf.addPage([4 * 72, 6 * 72]);
+      const scale = Math.min(page.getWidth() / embeddedPng.width, page.getHeight() / embeddedPng.height);
+      const drawWidth = embeddedPng.width * scale;
+      const drawHeight = embeddedPng.height * scale;
+
+      page.drawImage(embeddedPng, {
+        x: (page.getWidth() - drawWidth) / 2,
+        y: (page.getHeight() - drawHeight) / 2,
+        width: drawWidth,
+        height: drawHeight,
+      });
+    }
+
+    const pdfBytes = await combinedPdf.save();
+
+    return {
+      encodedLabel: Buffer.from(pdfBytes).toString('base64'),
+      pageCount: labelDocuments.length,
+      docType: 'PDF',
     };
   }
 
@@ -692,9 +678,9 @@ function buildCombinedLabelBuffer(labelDocuments) {
   }
 
   return {
-    encodedLabel: labelDocuments[0].encodedLabel,
+    encodedLabel: null,
     pageCount: labelDocuments.length,
-    docType,
+    docType: null,
   };
 }
 
@@ -717,10 +703,12 @@ async function inspectLabelDocuments(labelDocuments) {
       continue;
     }
 
-    if (document.docType === 'ZPLII' || document.docType === 'EPL2') {
+    if (document.docType === 'PNG') {
+      entry.note = 'PNG label returned.';
+    } else if (document.docType === 'PDF') {
+      entry.note = 'PDF label returned.';
+    } else if (document.docType === 'ZPLII' || document.docType === 'EPL2') {
       entry.preview = Buffer.from(document.encodedLabel, 'base64').toString('utf8').slice(0, 200);
-    } else if (document.docType === 'PNG') {
-      entry.note = 'PNG label returned; image preview path is disabled for thermal printing.';
     }
 
     diagnostics.push(entry);

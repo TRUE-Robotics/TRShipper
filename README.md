@@ -7,7 +7,7 @@ It currently supports two workflows:
 - the main shipping page, where a user reviews recipient details and creates a shipment
 - a separate `/Button` intake page, where a line of pasted text is parsed and redirected into the main shipping form for review
 
-The backend validates destination addresses with the FedEx Address Validation API before shipment creation, creates the shipment with the FedEx Ship API, requests thermal-printer labels as raw `ZPLII`, and provides a PDF preview of those ZPL labels through Labelary for on-screen viewing.
+The backend validates destination addresses with the FedEx Address Validation API before shipment creation, creates the shipment with the FedEx Ship API, and requests labels as `PNG` so we can avoid FedEx’s letter-sized PDF output while still returning a consistent PDF artifact to the browser.
 
 ## What The Application Does
 
@@ -18,9 +18,9 @@ Current behavior:
 - collects recipient name, company, email, phone, and address details
 - validates the destination address with FedEx before shipment creation
 - creates shipments through the FedEx Ship API
-- requests thermal labels as raw `ZPLII`
-- lets users download the raw label file for thermal printing
-- lets users preview the label as a PDF in a browser tab
+- requests FedEx labels as `PNG`
+- converts returned PNG labels into PDF before sending them to the browser
+- lets users preview and download a single PDF artifact for each shipment
 - supports a `/Button` helper page that parses pasted text and pre-fills the normal shipping form
 
 ## Current Pages
@@ -49,22 +49,19 @@ Apple Inc. Attn: John Doe 123 Main Street Worcester MA 01608 test@gmail.com 123-
 
 ## How Labels Work
 
-For real printing, this app uses FedEx thermal label output correctly:
+The current label flow uses PNG upstream and PDF in the app:
 
-- FedEx label image type: `ZPLII`
-- FedEx label stock: `STOCK_4X6`
-- print artifact: raw `.zpl`
+- FedEx label image type: `PNG`
+- FedEx label stock: `PAPER_4X6`
+- preview artifact: `.pdf`
+- download artifact: `.pdf`
 
-For browser preview only:
+For every shipment:
 
-- the backend sends the returned ZPL to Labelary
-- Labelary renders the ZPL into a PDF preview
-- the browser opens that preview in a new tab
-
-Important:
-
-- the raw `.zpl` file is the actual print file for the thermal printer
-- the PDF preview is only for human review and should not replace the raw ZPL print path
+- the app converts the returned PNG label data into PDF
+- if FedEx returns more than one label, the PDF contains one page per label
+- `Preview Label` opens that PDF in one browser tab
+- `Download Label` saves that PDF as one file
 
 ## Architecture
 
@@ -80,7 +77,6 @@ Backend:
 - FedEx OAuth token handling
 - FedEx Address Validation API call
 - FedEx Ship API call
-- Labelary preview route for ZPL-to-PDF rendering
 
 ## Routes
 
@@ -93,7 +89,6 @@ Backend routes:
 
 - `GET /health`
 - `POST /shipments`
-- `POST /labels/preview`
 
 ## Configuration
 
@@ -115,7 +110,6 @@ Server config includes:
 - shipper defaults
 - package defaults
 - label format defaults
-- ZPL preview rotation
 - debug logging flag
 
 ## Secrets
@@ -166,7 +160,8 @@ npm run build
 
 - GitHub Pages cannot safely hold FedEx secrets, so this app must use a backend for real shipment creation.
 - FedEx sandbox address validation can return `VIRTUAL.RESPONSE` data that is not trustworthy. The backend is currently set to ignore those sandbox-resolved addresses and keep the original submitted address instead.
-- FedEx has explicitly told us to use `ZPLII` for thermal printers instead of `PDF` or `PNG`.
+- FedEx sandbox address validation can still return `VIRTUAL.RESPONSE` data that does not match the submitted country or region. The backend ignores those sandbox-resolved values and keeps the original submitted address instead.
+- FedEx’s `PDF` label responses were returning 8.5x11 pages in this environment even when requesting `PAPER_4X6`, which is why the current pipeline uses `PNG`.
 
 ## Next Steps
 
@@ -184,5 +179,5 @@ To move this from a local prototype into a reliable production workflow, the mai
 4. Improve the `/Button` parser for more address variations.
    The current parser is tuned to the provided example format. It should be hardened for more real-world company names, multi-word cities, apartment/suite cases, and inconsistent phone formatting.
 
-5. Decide on the final production label preview strategy.
-   The current PDF preview uses Labelary and the raw print file uses ZPL. That is a good setup, but production usage should account for preview rate limits and reliability.
+5. Decide on the final production print strategy.
+   The current PNG pipeline gives a stable browser preview and download path. For production thermal printing, we should still decide whether to stay on PNG or move to a dedicated thermal-label flow that matches the printer setup more closely.
