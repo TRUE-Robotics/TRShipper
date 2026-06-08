@@ -177,8 +177,7 @@ button {
 }
 
 .shipping-form input,
-.shipping-form select,
-.intake-textarea {
+.shipping-form select {
   width: 100%;
   border: 3px solid #2e2d31;
   border-radius: 10px;
@@ -204,8 +203,7 @@ button {
 }
 
 .shipping-form input:focus,
-.shipping-form select:focus,
-.intake-textarea:focus {
+.shipping-form select:focus {
   outline: none;
   border-color: #ff7a19;
   box-shadow: 0 0 0 4px rgba(255, 122, 25, 0.14);
@@ -237,76 +235,12 @@ button {
   font-weight: 600;
 }
 
-.intake-card {
-  padding-top: 34px;
-}
-
-.intake-stack {
-  display: grid;
-  gap: 20px;
-}
-
-.intake-intro {
-  margin: -4px 0 2px;
-  max-width: 44rem;
-  color: #70528f;
-  font-size: 0.98rem;
-}
-
-.intake-textarea {
-  min-height: 168px;
-  line-height: 1.55;
-  resize: vertical;
-}
-
-.intake-help {
-  color: #8664af;
-  font-size: 0.82rem;
-  font-weight: 500;
-}
-
-.intake-button {
-  border: 0;
-  min-height: 56px;
-  border-radius: 16px;
-  padding: 14px 22px;
-  background: linear-gradient(180deg, #ff7f1f 0%, #ff6800 100%);
-  color: #fff;
-  font-size: 1.05rem;
-  font-weight: 800;
-  letter-spacing: 0.01em;
-  box-shadow: 0 16px 28px rgba(255, 104, 0, 0.22);
-}
-
-.intake-button:hover {
-  filter: brightness(1.02);
-}
-
-.suggestions-list {
-  list-style: none;
-  margin: 4px 0 0;
-  padding: 8px;
-  border: 1px solid #eadcfb;
-  border-radius: 14px;
-  background: #fff;
-  box-shadow: 0 12px 24px rgba(50, 20, 80, 0.08);
-}
-
-.suggestions-list li + li {
-  margin-top: 6px;
-}
-
-.suggestions-list button {
-  width: 100%;
-  border: 0;
-  border-radius: 10px;
-  background: #f7f1ff;
-  padding: 10px 12px;
-  text-align: left;
-}
-
-.suggestions-list button:hover {
-  background: #efe3ff;
+.shipping-form input:disabled {
+  cursor: not-allowed;
+  border-color: #b9b5bd;
+  background: #e8e6ea;
+  color: #77727c;
+  box-shadow: none;
 }
 
 .form-actions {
@@ -388,6 +322,92 @@ button {
   background: #f6ecff;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(30, 12, 48, 0.72);
+}
+
+.address-modal {
+  width: min(100%, 720px);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  border-radius: 24px;
+  padding: 30px;
+  background: #ffffff;
+  box-shadow: 0 30px 80px rgba(20, 7, 35, 0.42);
+}
+
+.address-modal h2 {
+  margin: 0;
+  color: #49207d;
+}
+
+.address-modal-intro {
+  margin: 12px 0 22px;
+  color: #70528f;
+}
+
+.address-comparison {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.address-option {
+  min-height: 180px;
+  border: 2px solid #ddc8f5;
+  border-radius: 16px;
+  padding: 18px;
+  background: #fbf8ff;
+}
+
+.address-option.resolved {
+  border-color: #ff9d55;
+  background: #fff8f2;
+}
+
+.address-option-label {
+  display: block;
+  margin-bottom: 14px;
+  color: #5b3285;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.address-option p {
+  margin: 4px 0;
+  color: #30243b;
+  font-weight: 600;
+}
+
+.address-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.address-modal-actions button {
+  border-radius: 12px;
+  padding: 12px 18px;
+  font-weight: 700;
+}
+
+.primary-modal-button {
+  border: 0;
+  background: linear-gradient(180deg, #ff7f1f 0%, #ff6800 100%);
+  color: #ffffff;
+  box-shadow: 0 12px 24px rgba(255, 104, 0, 0.24);
+}
+
 @media (max-width: 640px) {
   .app-shell {
     padding: 24px 14px;
@@ -427,5 +447,21 @@ button {
 
   .form-actions button {
     align-self: stretch;
+  }
+
+  .address-modal {
+    padding: 24px 20px;
+  }
+
+  .address-comparison {
+    grid-template-columns: 1fr;
+  }
+
+  .address-modal-actions {
+    flex-direction: column-reverse;
+  }
+
+  .address-modal-actions button {
+    width: 100%;
   }
 }

@@ -1,7 +1,10 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue';
-import { boxOptions, createShipmentRequest } from '../services/fedex.js';
-import { consumePastedShipmentDraft } from '../utils/pastedShipment.js';
+import { computed, reactive, ref } from 'vue';
+import {
+  boxOptions,
+  createShipmentRequest,
+  validateShippingAddressRequest,
+} from '../services/fedex.js';
 
 const form = reactive({
   recipientName: '',
@@ -19,6 +22,9 @@ const form = reactive({
 });
 
 const isSubmitting = ref(false);
+const isLargePakSelected = computed(() => form.boxType === 'FEDEX_LARGE_PAK');
+const addressChoice = ref(null);
+const pendingShipmentPayload = ref(null);
 const status = ref({
   tone: '',
   message: '',
@@ -35,8 +41,6 @@ const shipmentResult = ref({
 });
 const fieldErrors = reactive({
   recipientName: '',
-  recipientCompany: '',
-  email: '',
   phoneNumber: '',
   addressLine1: '',
   city: '',
@@ -49,8 +53,6 @@ const fieldErrors = reactive({
 
 const requiredFieldLabels = {
   recipientName: 'Recipient Name',
-  recipientCompany: 'Recipient Company',
-  email: 'Email',
   phoneNumber: 'Recipient Phone',
   addressLine1: 'Address Line 1',
   city: 'City',
@@ -60,25 +62,6 @@ const requiredFieldLabels = {
   boxType: 'Box Type',
   quantity: 'Quantity',
 };
-
-onMounted(() => {
-  const draft = consumePastedShipmentDraft();
-
-  if (!draft) {
-    return;
-  }
-
-  form.recipientName = draft.recipientName || '';
-  form.recipientCompany = draft.recipientCompany || '';
-  form.email = draft.email || '';
-  form.phoneNumber = draft.phoneNumber || '';
-  form.addressLine1 = draft.addressLine1 || '';
-  form.addressLine2 = draft.addressLine2 || '';
-  form.city = draft.city || '';
-  form.stateOrProvinceCode = draft.stateOrProvinceCode || '';
-  form.postalCode = draft.postalCode || '';
-  form.countryCode = draft.countryCode || 'US';
-});
 
 async function handleSubmit() {
   if (!validateRequiredFields()) {
@@ -106,39 +89,20 @@ async function handleSubmit() {
   };
 
   try {
-    const response = await createShipmentRequest({
-      recipientName: form.recipientName,
-      recipientCompany: form.recipientCompany,
-      recipientEmail: form.email,
-      recipientPhoneNumber: form.phoneNumber,
-      shippingAddress: {
-        addressLine1: form.addressLine1,
-        addressLine2: form.addressLine2,
-        city: form.city,
-        stateOrProvinceCode: form.stateOrProvinceCode,
-        postalCode: form.postalCode,
-        countryCode: form.countryCode,
-      },
-      packaging: {
-        boxType: form.boxType,
-        quantity: Number(form.quantity),
-      },
-    });
+    const shipmentPayload = buildShipmentPayload();
+    const validation = await validateShippingAddressRequest(shipmentPayload.shippingAddress);
 
-    status.value = {
-      tone: 'success',
-      message: response.message || 'Shipment request created successfully.',
-    };
-    shipmentResult.value = {
-      trackingNumber: response.trackingNumber || '',
-      label: response.label || '',
-      combinedLabelAvailable: Boolean(response.combinedLabelAvailable),
-      labelCount: response.labelCount || 0,
-      labels: response.labels || [],
-      labelDocType: response.labelDocType || 'PNG',
-      labelMimeType: response.labelMimeType || 'image/png',
-      labelFileExtension: response.labelFileExtension || 'png',
-    };
+    if (validation.changed && validation.resolvedAddress) {
+      pendingShipmentPayload.value = shipmentPayload;
+      addressChoice.value = {
+        originalAddress: validation.submittedAddress,
+        resolvedAddress: validation.resolvedAddress,
+      };
+      isSubmitting.value = false;
+      return;
+    }
+
+    await submitShipment(shipmentPayload);
   } catch (error) {
     status.value = {
       tone: 'error',
@@ -147,6 +111,104 @@ async function handleSubmit() {
   } finally {
     isSubmitting.value = false;
   }
+}
+
+function buildShipmentPayload() {
+  return {
+    recipientName: form.recipientName,
+    recipientCompany: form.recipientCompany,
+    recipientEmail: form.email,
+    recipientPhoneNumber: form.phoneNumber,
+    shippingAddress: {
+      addressLine1: form.addressLine1,
+      addressLine2: form.addressLine2,
+      city: form.city,
+      stateOrProvinceCode: form.stateOrProvinceCode,
+      postalCode: form.postalCode,
+      countryCode: form.countryCode,
+    },
+    packaging: {
+      boxType: form.boxType,
+      quantity: Number(form.quantity),
+    },
+  };
+}
+
+async function submitShipment(payload) {
+  const response = await createShipmentRequest(payload);
+
+  status.value = {
+    tone: 'success',
+    message: response.message || 'Shipment request created successfully.',
+  };
+  shipmentResult.value = {
+    trackingNumber: response.trackingNumber || '',
+    label: response.label || '',
+    combinedLabelAvailable: Boolean(response.combinedLabelAvailable),
+    labelCount: response.labelCount || 0,
+    labels: response.labels || [],
+    labelDocType: response.labelDocType || 'PNG',
+    labelMimeType: response.labelMimeType || 'image/png',
+    labelFileExtension: response.labelFileExtension || 'png',
+  };
+}
+
+async function chooseAddress(useResolvedAddress) {
+  const payload = pendingShipmentPayload.value;
+
+  if (!payload || !addressChoice.value) {
+    closeAddressChoice();
+    return;
+  }
+
+  isSubmitting.value = true;
+  status.value = {
+    tone: '',
+    message: '',
+  };
+
+  try {
+    if (useResolvedAddress) {
+      payload.shippingAddress = { ...addressChoice.value.resolvedAddress };
+      applyAddressToForm(payload.shippingAddress);
+    }
+
+    payload.useAddressAsSubmitted = true;
+    payload.addressSelection = useResolvedAddress ? 'resolved' : 'original';
+
+    closeAddressChoice();
+    await submitShipment(payload);
+  } catch (error) {
+    status.value = {
+      tone: 'error',
+      message: error.message || 'Shipment request failed.',
+    };
+  } finally {
+    isSubmitting.value = false;
+  }
+}
+
+function applyAddressToForm(address) {
+  form.addressLine1 = address.addressLine1 || '';
+  form.addressLine2 = address.addressLine2 || '';
+  form.city = address.city || '';
+  form.stateOrProvinceCode = address.stateOrProvinceCode || '';
+  form.postalCode = address.postalCode || '';
+  form.countryCode = address.countryCode || 'US';
+}
+
+function closeAddressChoice() {
+  addressChoice.value = null;
+  pendingShipmentPayload.value = null;
+}
+
+function formatAddress(address) {
+  return [
+    address?.addressLine1,
+    address?.addressLine2,
+    [address?.city, address?.stateOrProvinceCode, address?.postalCode].filter(Boolean).join(', '),
+    address?.countryCode,
+  ].filter(Boolean);
 }
 
 function validateRequiredFields() {
@@ -171,6 +233,15 @@ function validateRequiredFields() {
 
 function clearFieldError(field) {
   fieldErrors[field] = '';
+}
+
+function handleBoxTypeChange() {
+  clearFieldError('boxType');
+
+  if (isLargePakSelected.value) {
+    form.quantity = 1;
+    clearFieldError('quantity');
+  }
 }
 
 function inputClasses(field) {
@@ -364,7 +435,7 @@ function escapeHtml(value) {
         <p class="section-label">Shipment Request</p>
         <h2>Recipient + Package Details</h2>
       </div>
-      <span class="status-chip">Work In Progress</span>
+      <span class="status-chip">Ready for IMS Integration</span>
     </div>
 
     <form class="shipping-form" @submit.prevent="handleSubmit">
@@ -381,27 +452,21 @@ function escapeHtml(value) {
       </label>
 
       <label>
-        <span class="field-label">Recipient Company <span class="required-mark">*</span></span>
+        <span class="field-label">Recipient Company</span>
         <input
           v-model.trim="form.recipientCompany"
-          :class="inputClasses('recipientCompany')"
           type="text"
           placeholder="Acme Inc."
-          @input="clearFieldError('recipientCompany')"
         />
-        <small v-if="fieldErrors.recipientCompany" class="field-error">{{ fieldErrors.recipientCompany }}</small>
       </label>
 
       <label>
-        <span class="field-label">Email <span class="required-mark">*</span></span>
+        <span class="field-label">Email</span>
         <input
           v-model.trim="form.email"
-          :class="inputClasses('email')"
           type="email"
           placeholder="name@example.com"
-          @input="clearFieldError('email')"
         />
-        <small v-if="fieldErrors.email" class="field-error">{{ fieldErrors.email }}</small>
       </label>
 
       <label>
@@ -489,7 +554,7 @@ function escapeHtml(value) {
 
       <label>
         <span class="field-label">Box Type <span class="required-mark">*</span></span>
-        <select v-model="form.boxType" :class="inputClasses('boxType')" @change="clearFieldError('boxType')">
+        <select v-model="form.boxType" :class="inputClasses('boxType')" @change="handleBoxTypeChange">
           <option v-for="option in boxOptions" :key="option.value" :value="option.value">
             {{ option.label }}
           </option>
@@ -504,7 +569,10 @@ function escapeHtml(value) {
           :class="inputClasses('quantity')"
           type="number"
           min="1"
+          :max="isLargePakSelected ? 1 : undefined"
           step="1"
+          :disabled="isLargePakSelected"
+          :title="isLargePakSelected ? 'FedEx Large Pak quantity is limited to one package.' : ''"
           @input="clearFieldError('quantity')"
         />
         <small v-if="fieldErrors.quantity" class="field-error">{{ fieldErrors.quantity }}</small>
@@ -549,4 +617,49 @@ function escapeHtml(value) {
       </div>
     </form>
   </section>
+
+  <div
+    v-if="addressChoice"
+    class="modal-backdrop"
+    role="presentation"
+    @click.self="closeAddressChoice"
+  >
+    <section
+      class="address-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="address-modal-title"
+    >
+      <p class="section-label">Address Validation</p>
+      <h2 id="address-modal-title">FedEx Suggested A Different Address</h2>
+      <p class="address-modal-intro">
+        Review both addresses and choose which one should be used for the shipment and label.
+      </p>
+
+      <div class="address-comparison">
+        <article class="address-option">
+          <span class="address-option-label">Your Original Address</span>
+          <p v-for="(line, index) in formatAddress(addressChoice.originalAddress)" :key="index">
+            {{ line }}
+          </p>
+        </article>
+
+        <article class="address-option resolved">
+          <span class="address-option-label">FedEx Resolved Address</span>
+          <p v-for="(line, index) in formatAddress(addressChoice.resolvedAddress)" :key="index">
+            {{ line }}
+          </p>
+        </article>
+      </div>
+
+      <div class="address-modal-actions">
+        <button type="button" class="secondary-button" @click="chooseAddress(false)">
+          Keep Original Address
+        </button>
+        <button type="button" class="primary-modal-button" @click="chooseAddress(true)">
+          Use FedEx Address
+        </button>
+      </div>
+    </section>
+  </div>
 </template>

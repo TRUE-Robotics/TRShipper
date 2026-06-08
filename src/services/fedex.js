@@ -9,17 +9,6 @@ export const boxOptions = [
 
 export async function createShipmentRequest(payload) {
   const apiBaseUrl = frontendConfig.apiBaseUrl;
-  const mockEnabled = frontendConfig.enableMockSubmission;
-
-  if (mockEnabled) {
-    await new Promise((resolve) => window.setTimeout(resolve, 700));
-
-    return {
-      ok: true,
-      message: `Mock shipment created for ${payload.recipientEmail}.`,
-      payload,
-    };
-  }
 
   if (!apiBaseUrl) {
     throw new Error('Missing frontendConfig.apiBaseUrl. Point it at your FedEx proxy/backend.');
@@ -31,6 +20,29 @@ export async function createShipmentRequest(payload) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const message = await readErrorMessage(response);
+    throw new Error(message);
+  }
+
+  return response.json();
+}
+
+export async function validateShippingAddressRequest(shippingAddress) {
+  const apiBaseUrl = frontendConfig.apiBaseUrl;
+
+  if (!apiBaseUrl) {
+    throw new Error('Missing frontendConfig.apiBaseUrl. Point it at your FedEx proxy/backend.');
+  }
+
+  const response = await fetch(`${apiBaseUrl}/addresses/validate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ shippingAddress }),
   });
 
   if (!response.ok) {
