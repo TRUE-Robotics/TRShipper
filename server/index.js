@@ -80,6 +80,10 @@ const server = createServer(async (request, response) => {
         ...payload,
         shippingAddress: validatedShippingAddress,
       });
+      const fedexRequestBody = JSON.stringify(fedexPayload);
+
+      maybeLogShipApiPayload(fedexRequestBody);
+
       const fedexResponse = await fetch(`${getFedexBaseUrl()}/ship/v1/shipments`, {
         method: 'POST',
         headers: {
@@ -87,7 +91,7 @@ const server = createServer(async (request, response) => {
           'Content-Type': 'application/json',
           'X-locale': 'en_US',
         },
-        body: JSON.stringify(fedexPayload),
+        body: fedexRequestBody,
       });
 
       const data = await fedexResponse.json();
@@ -425,13 +429,15 @@ async function normalizeShipmentResponse(data, fedexPayload = null) {
 }
 
 function buildMockResponse(payload) {
+  const labelDocType = serverConfig.labelImageType;
+
   return {
     ok: true,
     message: `Mock shipment created for ${payload.recipientEmail}.`,
     trackingNumber: 'MOCK123456789',
-    labelDocType: 'PNG',
-    labelMimeType: 'image/png',
-    labelFileExtension: 'png',
+    labelDocType,
+    labelMimeType: resolveLabelMimeType(labelDocType),
+    labelFileExtension: resolveLabelFileExtension(labelDocType),
     raw: payload,
   };
 }
@@ -634,8 +640,27 @@ async function buildCombinedLabelBuffer(labelDocuments) {
   const docType = uniqueDocTypes[0];
 
   if (docType === 'PDF') {
+    if (labelDocuments.length === 1) {
+      return {
+        encodedLabel: labelDocuments[0].encodedLabel,
+        pageCount: 1,
+        docType,
+      };
+    }
+
+    const combinedPdf = await PDFDocument.create();
+
+    for (const document of labelDocuments) {
+      const sourcePdf = await PDFDocument.load(Buffer.from(document.encodedLabel, 'base64'));
+      const copiedPages = await combinedPdf.copyPages(sourcePdf, sourcePdf.getPageIndices());
+
+      copiedPages.forEach((page) => combinedPdf.addPage(page));
+    }
+
+    const pdfBytes = await combinedPdf.save();
+
     return {
-      encodedLabel: labelDocuments[0].encodedLabel,
+      encodedLabel: Buffer.from(pdfBytes).toString('base64'),
       pageCount: labelDocuments.length,
       docType,
     };
@@ -731,6 +756,14 @@ function maybeLogAddressValidationDiagnostics(payload) {
   }
 
   console.log('[FEDEX_ADDRESS_VALIDATION_DEBUG]', JSON.stringify(payload, null, 2));
+}
+
+function maybeLogShipApiPayload(requestBody) {
+  if (!serverConfig.debugLabels) {
+    return;
+  }
+
+  console.log('[FEDEX_SHIP_API_PAYLOAD]', JSON.stringify(JSON.parse(requestBody), null, 2));
 }
 
 function resolvePackagingType(boxType) {

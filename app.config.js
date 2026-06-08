@@ -25,8 +25,8 @@ export const serverConfig = Object.freeze({
   pickupType: 'DROPOFF_AT_FEDEX_LOCATION',
   weightUnits: 'LB',
   packageWeightValue: 10,
-  labelImageType: 'PNG',
-  labelStockType: 'PAPER_4X6',
+  labelImageType: 'PDF',
+  labelStockType: 'PAPER_LETTER',
   labelFormatType: 'COMMON2D',
   debugLabels: true,
 });

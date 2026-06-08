@@ -7,7 +7,7 @@ It currently supports two workflows:
 - the main shipping page, where a user reviews recipient details and creates a shipment
 - a separate `/Button` intake page, where a line of pasted text is parsed and redirected into the main shipping form for review
 
-The backend validates destination addresses with the FedEx Address Validation API before shipment creation, creates the shipment with the FedEx Ship API, and requests labels as `PNG` so we can avoid FedEx’s letter-sized PDF output while still returning a consistent PDF artifact to the browser.
+The backend validates destination addresses with the FedEx Address Validation API before shipment creation, creates the shipment with the FedEx Ship API, and requests laser-printer PDF labels on letter stock for Ship API verification.
 
 ## What The Application Does
 
@@ -18,8 +18,8 @@ Current behavior:
 - collects recipient name, company, email, phone, and address details
 - validates the destination address with FedEx before shipment creation
 - creates shipments through the FedEx Ship API
-- requests FedEx labels as `PNG`
-- converts returned PNG labels into PDF before sending them to the browser
+- requests FedEx labels as `PDF`
+- requests letter-sized laser label stock
 - lets users preview and download a single PDF artifact for each shipment
 - supports a `/Button` helper page that parses pasted text and pre-fills the normal shipping form
 
@@ -49,19 +49,21 @@ Apple Inc. Attn: John Doe 123 Main Street Worcester MA 01608 test@gmail.com 123-
 
 ## How Labels Work
 
-The current label flow uses PNG upstream and PDF in the app:
+This branch is temporarily configured for Ship API verification with a laser printer:
 
-- FedEx label image type: `PNG`
-- FedEx label stock: `PAPER_4X6`
+- FedEx label image type: `PDF`
+- FedEx label stock: `PAPER_LETTER`
 - preview artifact: `.pdf`
 - download artifact: `.pdf`
 
 For every shipment:
 
-- the app converts the returned PNG label data into PDF
-- if FedEx returns more than one label, the PDF contains one page per label
+- the app uses the PDF returned by FedEx
+- if FedEx returns more than one PDF label document, the app combines them into one PDF artifact
 - `Preview Label` opens that PDF in one browser tab
 - `Download Label` saves that PDF as one file
+
+After Ship API verification, switch the normal production branch back to the thermal-label strategy.
 
 ## Architecture
 
@@ -161,7 +163,7 @@ npm run build
 - GitHub Pages cannot safely hold FedEx secrets, so this app must use a backend for real shipment creation.
 - FedEx sandbox address validation can return `VIRTUAL.RESPONSE` data that is not trustworthy. The backend is currently set to ignore those sandbox-resolved addresses and keep the original submitted address instead.
 - FedEx sandbox address validation can still return `VIRTUAL.RESPONSE` data that does not match the submitted country or region. The backend ignores those sandbox-resolved values and keeps the original submitted address instead.
-- FedEx’s `PDF` label responses were returning 8.5x11 pages in this environment even when requesting `PAPER_4X6`, which is why the current pipeline uses `PNG`.
+- This branch intentionally requests FedEx `PDF` labels with `PAPER_LETTER` stock so the Ship API verification labels can be printed on laser sheets.
 
 ## Next Steps
 
