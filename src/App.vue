@@ -1,6 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue';
-import ButtonIntake from './components/ButtonIntake.vue';
+import { ref } from 'vue';
 import ShippingForm from './components/ShippingForm.vue';
 import { frontendConfig } from '../app.config.js';
 
@@ -8,7 +7,6 @@ const appTitle = frontendConfig.appTitle;
 const configuredLogoUrl = frontendConfig.logoUrl;
 const logoUrl = resolveLogoUrl(configuredLogoUrl);
 const logoVisible = ref(true);
-const isButtonPage = computed(() => window.location.pathname.endsWith('/Button'));
 
 function resolveLogoUrl(path) {
   if (!path) {
@@ -45,8 +43,7 @@ function resolveLogoUrl(path) {
           </div>
         </div>
       </section>
-      <ButtonIntake v-if="isButtonPage" />
-      <ShippingForm v-else />
+      <ShippingForm />
     </main>
   </div>
 </template>
